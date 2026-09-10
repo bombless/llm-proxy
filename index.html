@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LLM Proxy</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f6f7f9;color:#17181a;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.wrap{max-width:1250px;margin:36px auto;padding:0 18px}h1{margin:0 0 6px;font-size:28px}p{color:#666}.card{background:#fff;border:1px solid #e3e5e8;border-radius:14px;padding:20px;margin:18px 0;box-shadow:0 2px 8px #00000008}.head{display:flex;justify-content:space-between;align-items:center;gap:10px}.head h2{margin:0;font-size:19px}.row{display:grid;grid-template-columns:1fr 1.3fr .9fr 1fr auto auto auto auto;gap:8px;margin:10px 0;align-items:center}.row input{min-width:0;padding:10px 11px;border:1px solid #d8dadd;border-radius:8px;font-size:14px}.btn{border:0;border-radius:8px;padding:9px 13px;cursor:pointer;background:#17181a;color:white;white-space:nowrap}.btn.secondary{background:#eceef0;color:#222}.btn.danger{background:#d83b3b}.actions{display:flex;gap:8px;margin-top:14px}.check{display:flex;align-items:center;gap:5px;white-space:nowrap;font-size:13px}.check input{width:18px;height:18px}.status{position:fixed;right:18px;bottom:18px;background:#17181a;color:#fff;padding:10px 14px;border-radius:9px;display:none;max-width:min(600px,calc(100vw - 36px));white-space:pre-wrap}.hint{font-size:13px;color:#777}.empty{color:#999;padding:10px 0}.result{grid-column:1/-1;background:#f6f7f9;border-radius:9px;padding:10px;white-space:pre-wrap;word-break:break-word;font-size:13px;display:block}@media(max-width:1100px){.row{grid-template-columns:1fr 1fr}}@media(max-width:600px){.row{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap"><h1>LLM Proxy</h1><p>把多个 OpenAI-compatible 接口汇集到统一的 <code>/v1</code> 地址。Responses 配置可以选择直接代理 Responses，或由本服务转换成 Chat Completions，并在本地维护 <code>previous_response_id</code> 状态。</p><div id="app"></div></div>
+<div id="status" class="status"></div>
+<script>
+let state={chat_completions:[],responses:[]};
+const esc=s=>String(s??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');
+function section(type,title){const a=state[type]||[];return '<div class="card"><div class="head"><h2>'+title+'</h2><button class="btn secondary" onclick="addRow(\''+type+'\')">+ 添加</button></div><div class="hint">公开模型名 → 上游地址 / Key / 上游模型名 / 代理</div><div id="rows-'+type+'">'+(a.length?a.map((x,i)=>row(type,x,i)).join(''):'<div class="empty">还没有配置。</div>')+'</div></div>'}
+function row(type,x,i){const rid='result-'+type+'-'+i;const responseOption=type==='responses'?'<label class="check"><input type="checkbox" '+(x.proxy_from_chat_completions===true?'checked':'')+' onchange="edit(\''+type+'\','+i+',\'proxy_from_chat_completions\',this.checked)">从 Chat Completions 代理</label>':'';return '<div class="row"><input placeholder="公开模型名，如 gpt-4" value="'+esc(x.public_model)+'" oninput="edit(\''+type+'\','+i+',\'public_model\',this.value)"><input placeholder="接口地址，如 https://.../v1/chat/completions" value="'+esc(x.url)+'" oninput="edit(\''+type+'\','+i+',\'url\',this.value)"><input type="password" placeholder="API Key" value="'+esc(x.key)+'" oninput="edit(\''+type+'\','+i+',\'key\',this.value)"><input placeholder="上游模型名" value="'+esc(x.upstream_model)+'" oninput="edit(\''+type+'\','+i+',\'upstream_model\',this.value)"><label class="check"><input type="checkbox" '+(x.use_proxy!==false?'checked':'')+' onchange="edit(\''+type+'\','+i+',\'use_proxy\',this.checked)">SOCKS5</label>'+responseOption+'<button class="btn secondary" onclick="testRow(\''+type+'\','+i+')">测试“你好”</button><button class="btn danger" onclick="delRow(\''+type+'\','+i+')">删除</button><div id="'+rid+'" class="result" style="display:none"></div></div>'}
+function edit(t,i,k,v){state[t][i][k]=v} function addRow(t){state[t].push({id:String(Date.now()+Math.random()),public_model:'',url:'',key:'',upstream_model:'',use_proxy:true,proxy_from_chat_completions:false,enabled:true});render()} function delRow(t,i){state[t].splice(i,1);render()}
+async function load(){state=await (await fetch('/api/config')).json();render()} async function save(){const r=await fetch('/api/config',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(state)});if(!r.ok){flash('保存失败');return}state=await r.json();render();flash('已保存')}
+async function testRow(t,i){const x=state[t][i];const el=document.getElementById('result-'+t+'-'+i);el.style.display='block';el.className='result';el.textContent='测试中...';try{const r=await fetch('/api/test',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({type:t,id:x.id})});const d=await r.json();if(!r.ok)throw new Error(d.error||'测试失败');el.textContent='HTTP '+d.status+'\n'+d.text}catch(e){el.className='result error';el.textContent=e.message}}
+function flash(s){const el=document.getElementById('status');el.textContent=s;el.style.display='block';setTimeout(()=>el.style.display='none',1800)}
+function render(){document.getElementById('app').innerHTML=section('chat_completions','Chat Completions')+section('responses','Responses')+'<div class="actions"><button class="btn" onclick="save()">保存配置</button><button class="btn secondary" onclick="load()">重新加载</button></div>'} load();
+</script>
+</body>
+</html>
