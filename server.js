@@ -199,7 +199,23 @@ function extractTestText(raw, type) { try { const data = JSON.parse(raw); if (ty
 
 app.all("/v1/chat/completions", (req, res) => proxyRequest(req, res, "chat_completions"));
 app.all("/v1/responses", (req, res) => proxyRequest(req, res, "responses"));
-app.get("/v1/models", (req, res) => { const models = [...(config.chat_completions || []).filter((x) => x.enabled !== false).map((x) => ({ id: x.public_model, object: "model", owned_by: "llm-proxy", endpoint: "chat_completions" })), ...(config.responses || []).filter((x) => x.enabled !== false).map((x) => ({ id: x.public_model, object: "model", owned_by: "llm-proxy", endpoint: "responses" }))]; res.json({ object: "list", data: models }); });
+app.get("/v1/models", (req, res) => {
+  const models = new Map();
+  for (const type of ["chat_completions", "responses"]) {
+    for (const entry of (config[type] || [])) {
+      if (entry.enabled === false || !entry.public_model) continue;
+      if (!models.has(entry.public_model)) {
+        models.set(entry.public_model, {
+          id: entry.public_model,
+          object: "model",
+          created: Number(entry.created) || 0,
+          owned_by: entry.owned_by || "llm-proxy"
+        });
+      }
+    }
+  }
+  res.json({ object: "list", data: [...models.values()] });
+});
 app.get("/api/config", (req, res) => res.json(sanitizeConfig()));
 app.put("/api/config", (req, res) => { const incoming = req.body || {}; for (const type of ["chat_completions", "responses"]) { if (!Array.isArray(incoming[type])) continue; config[type] = incoming[type].map((x) => ({ id: String(x.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`), public_model: String(x.public_model || "").trim(), url: String(x.url || "").trim(), key: x.key === "********" ? ((config[type] || []).find((old) => old.id === x.id)?.key || "") : String(x.key || ""), upstream_model: String(x.upstream_model || "").trim(), use_proxy: x.use_proxy !== false, proxy_from_chat_completions: type === "responses" ? x.proxy_from_chat_completions === true : false, enabled: x.enabled !== false })).filter((x) => x.public_model && x.url); } saveConfig(config); res.json(sanitizeConfig()); });
 app.post("/api/test", async (req, res) => { const type = req.body?.type, id = req.body?.id; if (!["chat_completions", "responses"].includes(type) || !id) return res.status(400).json({ ok: false, error: "Invalid test request" }); const entry = (config[type] || []).find((x) => x.id === id); if (!entry) return res.status(404).json({ ok: false, error: "Upstream not found" }); try { const result = await performTest(entry, type); res.json({ ok: true, status: result.status, text: extractTestText(result.body, type), raw: result.body }); } catch (e) { res.status(502).json({ ok: false, error: e.message }); } });
