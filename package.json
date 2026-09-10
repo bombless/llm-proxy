@@ -1,12 +1,13 @@
 {
   "name": "llm-proxy",
-  "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "version": "2.0.0",
+  "description": "Configurable multi-provider OpenAI-compatible LLM gateway",
+  "main": "server.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node server.js",
+    "test": "node --check server.js"
   },
-  "keywords": [],
+  "keywords": ["llm", "proxy", "openai", "responses", "chat-completions"],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
