@@ -4,15 +4,24 @@
   "description": "Configurable multi-provider OpenAI-compatible LLM gateway",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "vite",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "server": "node server.js",
     "test": "node --check server.js"
   },
-  "keywords": ["llm", "proxy", "openai", "responses", "chat-completions"],
+  "keywords": ["llm", "proxy", "openai", "responses", "chat-completions", "vue", "vite"],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
     "express": "^5.2.1",
-    "socks-proxy-agent": "^10.1.0"
+    "socks-proxy-agent": "^10.1.0",
+    "vue": "^3.5.21"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.1",
+    "vite": "^7.1.7"
   }
 }
