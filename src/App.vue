@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import ModelBenchmark from './components/ModelBenchmark.vue'
+import StatsPanel from './components/StatsPanel.vue'
 
 const types = [
   { key: 'chat_completions', title: 'Chat Completions' },
@@ -87,6 +88,7 @@ onMounted(load)
     </header>
 
     <ModelBenchmark :configs="state" :saved-configs="savedState" :types="types" @notice="showNotice" />
+    <StatsPanel :configs="state" :types="types" />
 
     <section v-for="section in types" :key="section.key" class="card">
       <div class="section-head"><div><h2>{{ section.title }}</h2><div class="hint">公开模型名 → 上游地址 / Key / 上游模型名 / 代理</div></div><button class="btn secondary" @click="addRow(section.key)">＋ 添加</button></div>
