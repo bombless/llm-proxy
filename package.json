@@ -4,7 +4,7 @@
   "description": "Configurable multi-provider OpenAI-compatible LLM gateway",
   "main": "server.js",
   "scripts": {
-    "start": "concurrently -k \"node server.js\" \"vite\"",
+    "start": "npm run build && node start.js",
     "dev": "vite",
     "server": "node server.js",
     "build": "vite build",
