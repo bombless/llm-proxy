@@ -66,5 +66,7 @@ code { padding: 2px 5px; border-radius: 5px; background: #eceef0; }
 .config-row.info { grid-template-columns: 1fr 1.3fr .9fr 1fr .85fr; }
 .config-row.price { grid-template-columns: 2fr 2fr 2fr 1fr 1fr; }
 .price-input-wrap { position: relative; display: block; min-width: 0; }
-.price-input-wrap input { width: 100%; padding-right: 58px !important; }
+.price-input-wrap input { width: 100%; padding-right: 58px !important; -moz-appearance: textfield; appearance: textfield; }
+.price-input-wrap input::-webkit-outer-spin-button,
+.price-input-wrap input::-webkit-inner-spin-button { margin: 0; -webkit-appearance: none; }
 .price-badge { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); padding: 2px 6px; border: 1px solid #e4b72f; border-radius: 999px; background: #fff3a6; color: #6b5100; font-size: 11px; line-height: 1.3; font-weight: 700; pointer-events: none; white-space: nowrap; }
