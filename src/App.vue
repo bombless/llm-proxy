@@ -1,5 +1,6 @@
 <script setup>
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import ErrorStats from './components/ErrorStats.vue'
 import ModelBenchmark from './components/ModelBenchmark.vue'
 import MetricsPanel from './components/MetricsPanel.vue'
 import ProxyConfigPanel from './components/ProxyConfigPanel.vue'
@@ -13,6 +14,7 @@ const tabs = [
   { key: 'proxy', title: '接口配置' },
   { key: 'usage', title: '费用统计' },
   { key: 'metrics', title: '调用统计' },
+  { key: 'errors', title: '错误统计' },
   { key: 'benchmark', title: '性能测试' },
 ]
 
@@ -93,6 +95,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', handleBeforeUnload)
     <ProxyConfigPanel v-show="activeTab === 'proxy'" :state="state" :saved-state="savedState" :types="types" :row-results="rowResults" @add="addRow" @remove="removeRow" @test="testRow" />
     <UsagePanel v-show="activeTab === 'usage'" :configs="state" :types="types" />
     <MetricsPanel v-show="activeTab === 'metrics'" :configs="state" :types="types" />
+    <ErrorStats v-show="activeTab === 'errors'" :configs="state" :types="types" />
     <ModelBenchmark v-show="activeTab === 'benchmark'" :configs="state" :saved-configs="savedState" :types="types" @notice="showNotice" />
   </main>
   <button class="btn primary save-fab" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存配置' }}</button>
