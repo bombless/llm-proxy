@@ -120,9 +120,18 @@ onUnmounted(() => {
           <label class="check"><input v-model="row.use_proxy" type="checkbox" /> SOCKS5</label>
         </div>
         <div class="config-row price">
-          <input v-model.number="row.cache_price" type="number" min="0" step="0.000001" placeholder="缓存 $/1M" />
-          <input v-model.number="row.prefill_price" type="number" min="0" step="0.000001" placeholder="预填充 $/1M" />
-          <input v-model.number="row.generation_price" type="number" min="0" step="0.000001" placeholder="生成 $/1M" />
+          <label class="price-input-wrap">
+            <input v-model.number="row.cache_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="缓存价格（USD / 1M tokens）" />
+            <span class="price-badge">缓存</span>
+          </label>
+          <label class="price-input-wrap">
+            <input v-model.number="row.prefill_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="预填充价格（USD / 1M tokens）" />
+            <span class="price-badge">预填充</span>
+          </label>
+          <label class="price-input-wrap">
+            <input v-model.number="row.generation_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="输出价格（USD / 1M tokens）" />
+            <span class="price-badge">输出</span>
+          </label>
           <label v-if="section.key === 'responses'" class="check"><input v-model="row.proxy_from_chat_completions" type="checkbox" /> 从 Chat Completions 代理</label>
           <button v-if="isSaved(section.key, row)" class="btn secondary" @click="testRow(section.key, row)">{{ rowResults[`${section.key}:${row.id}`]?.loading ? '测试中…' : '测试“你好”' }}</button>
           <button class="btn danger" @click="removeRow(section.key, index)">删除</button>
@@ -135,7 +144,3 @@ onUnmounted(() => {
   <button class="btn primary save-fab" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存配置' }}</button>
   <div v-if="notice" class="status">{{ notice }}</div>
 </template>
-
-
-
-\n
