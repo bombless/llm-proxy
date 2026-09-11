@@ -169,3 +169,17 @@ async function testAll() {
     </div>
   </section>
 </template>
+
+<style scoped>
+.benchmark { margin-top: 0; }
+.bench-live { margin-top: 14px; padding: 12px 14px; border: 1px solid #e3e5e8; border-radius: 10px; background: #fafbfc; }
+.bench-live div { margin-top: 5px; color: #666; font-size: 13px; }
+.bench-live small { display: block; margin-top: 7px; color: #444; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bench-table { width: 100%; margin-top: 14px; border-collapse: collapse; font-size: 13px; }
+.bench-table th, .bench-table td { padding: 10px 8px; border-bottom: 1px solid #e8e9eb; text-align: left; vertical-align: top; }
+.bench-table th { color: #666; font-weight: 600; }
+.bench-ok { font-weight: 600; }
+.bench-running { color: #666; }
+.bench-text { max-width: 420px; max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bench-summary { margin-top: 10px; color: #666; font-size: 13px; }
+</style>
