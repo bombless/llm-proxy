@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 import ModelBenchmark from './components/ModelBenchmark.vue'
 
 const types = [
@@ -12,8 +12,6 @@ const savedState = reactive({ chat_completions: [], responses: [] })
 const rowResults = reactive({})
 const busy = ref(false)
 const notice = ref('')
-
-const hasConfigs = computed(() => types.some(({ key }) => state[key].some(x => x.enabled !== false && x.public_model && x.url)))
 
 function clone(value) { return JSON.parse(JSON.stringify(value)) }
 function snapshot(x) {
