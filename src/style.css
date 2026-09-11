@@ -51,3 +51,14 @@ code { padding: 2px 5px; border-radius: 5px; background: #eceef0; }
 .metric-table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 12px; }
 .metric-table th, .metric-table td { padding: 7px 8px; border-bottom: 1px solid #eef0f2; text-align: left; vertical-align: middle; }
 .metric-table th { color: #777; font-weight: 600; }
+.usage-total { display: flex; align-items: center; gap: 10px; font-weight: 700; }
+.usage-config { margin-top: 16px; padding-top: 14px; border-top: 1px solid #e8e9eb; }
+.usage-config:first-of-type { border-top: 0; padding-top: 0; }
+.usage-config-head { display: flex; justify-content: space-between; gap: 12px; }
+.usage-grid { display: grid; grid-template-columns: repeat(7, minmax(90px, 1fr)); gap: 8px; margin-top: 10px; }
+.usage-grid div { padding: 10px; border-radius: 8px; background: #fafbfc; }
+.usage-grid span { display: block; color: #777; font-size: 11px; }
+.usage-grid strong { display: block; margin-top: 4px; font-size: 13px; font-variant-numeric: tabular-nums; }
+@media (max-width: 900px) { .usage-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 600px) { .usage-grid { grid-template-columns: repeat(2, 1fr); } }
+.config-row { grid-template-columns: 1fr 1.3fr .9fr 1fr .85fr .85fr .85fr auto auto auto auto; }

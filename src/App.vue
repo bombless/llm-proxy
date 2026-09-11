@@ -2,6 +2,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import ModelBenchmark from './components/ModelBenchmark.vue'
 import MetricsPanel from './components/MetricsPanel.vue'
+import UsagePanel from './components/UsagePanel.vue'
 
 const types = [
   { key: 'chat_completions', title: 'Chat Completions' },
@@ -16,14 +17,14 @@ const notice = ref('')
 
 function clone(value) { return JSON.parse(JSON.stringify(value)) }
 function snapshot(x) {
-  return { id: x.id, public_model: x.public_model, url: x.url, key: x.key, upstream_model: x.upstream_model, use_proxy: x.use_proxy, proxy_from_chat_completions: x.proxy_from_chat_completions, enabled: x.enabled }
+  return { id: x.id, public_model: x.public_model, url: x.url, key: x.key, upstream_model: x.upstream_model, use_proxy: x.use_proxy, proxy_from_chat_completions: x.proxy_from_chat_completions, cache_price: x.cache_price, prefill_price: x.prefill_price, generation_price: x.generation_price, enabled: x.enabled }
 }
 function isSaved(type, x) {
   const old = savedState[type].find(y => y.id === x.id)
   return !!old && JSON.stringify(snapshot(old)) === JSON.stringify(snapshot(x))
 }
 function makeRow() {
-  return { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, public_model: '', url: '', key: '', upstream_model: '', use_proxy: true, proxy_from_chat_completions: false, enabled: true }
+  return { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, public_model: '', url: '', key: '', upstream_model: '', use_proxy: true, proxy_from_chat_completions: false, cache_price: 0, prefill_price: 0, generation_price: 0, enabled: true }
 }
 function addRow(type) { state[type].push(makeRow()) }
 function removeRow(type, index) { state[type].splice(index, 1) }
@@ -87,18 +88,22 @@ onMounted(load)
       <button class="btn primary" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存配置' }}</button>
     </header>
 
+    <UsagePanel :configs="state" :types="types" />
     <MetricsPanel :configs="state" :types="types" />
 
     <ModelBenchmark :configs="state" :saved-configs="savedState" :types="types" @notice="showNotice" />
 
     <section v-for="section in types" :key="section.key" class="card">
-      <div class="section-head"><div><h2>{{ section.title }}</h2><div class="hint">公开模型名 → 上游地址 / Key / 上游模型名 / 代理</div></div><button class="btn secondary" @click="addRow(section.key)">＋ 添加</button></div>
+      <div class="section-head"><div><h2>{{ section.title }}</h2><div class="hint">公开模型名 → 上游地址 / Key / 上游模型名 / 代理 / 价格（USD / 1M tokens）</div></div><button class="btn secondary" @click="addRow(section.key)">＋ 添加</button></div>
       <div v-if="!state[section.key].length" class="empty">还没有配置。</div>
       <div v-for="(row, index) in state[section.key]" :key="row.id" class="config-row">
         <input v-model="row.public_model" placeholder="公开模型名，如 gpt-4" />
         <input v-model="row.url" placeholder="接口地址，如 https://.../v1/chat/completions" />
         <input v-model="row.key" type="password" placeholder="API Key" />
         <input v-model="row.upstream_model" placeholder="上游模型名" />
+        <input v-model.number="row.cache_price" type="number" min="0" step="0.000001" placeholder="缓存 $/1M" />
+        <input v-model.number="row.prefill_price" type="number" min="0" step="0.000001" placeholder="预填充 $/1M" />
+        <input v-model.number="row.generation_price" type="number" min="0" step="0.000001" placeholder="生成 $/1M" />
         <label class="check"><input v-model="row.use_proxy" type="checkbox" /> SOCKS5</label>
         <label v-if="section.key === 'responses'" class="check"><input v-model="row.proxy_from_chat_completions" type="checkbox" /> 从 Chat Completions 代理</label>
         <button v-if="isSaved(section.key, row)" class="btn secondary" @click="testRow(section.key, row)">{{ rowResults[`${section.key}:${row.id}`]?.loading ? '测试中…' : '测试“你好”' }}</button>
@@ -109,3 +114,7 @@ onMounted(load)
   </main>
   <div v-if="notice" class="status">{{ notice }}</div>
 </template>
+
+
+
+\n

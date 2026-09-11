@@ -3,6 +3,7 @@ const http = require("http");
 const https = require("https");
 const fs = require("fs");
 const path = require("path");
+const alasql = require("alasql");
 const { SocksProxyAgent } = require("socks-proxy-agent");
 
 const LISTEN_HOST = process.env.LISTEN_HOST || "127.0.0.1";
@@ -11,6 +12,7 @@ const SOCKS5_PROXY = process.env.SOCKS5_PROXY || "";
 const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, "config.json");
 const RESPONSE_STATE_FILE = process.env.RESPONSE_STATE_FILE || path.join(__dirname, "responses-state.json");
 const METRICS_FILE = process.env.METRICS_FILE || path.join(__dirname, "llm-metrics.json");
+const USAGE_FILE = process.env.USAGE_FILE || path.join(__dirname, "llm-usage.json");
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -37,6 +39,7 @@ function recordMetric(type, entry, sample) {
   saveMetrics();
 }
 function metricTracker(type, entry) {
+  const startedEpoch = Date.now();
   const startedAt = process.hrtime.bigint();
   let firstTextAt = null, text = "", usage = null, buffer = "";
   const consume = (chunk) => {
@@ -53,8 +56,9 @@ function metricTracker(type, entry) {
       text += delta;
     }
   };
-  return { consume, finish(status) {
+  return { type, entry, startedEpoch, consume, finish(status) {
     consume("");
+    recordUsage(type, entry, startedEpoch, status, usage);
     if (firstTextAt === null) return;
     const finishedAt = process.hrtime.bigint();
     const ttftMs = Number(firstTextAt - startedAt) / 1e6;
@@ -63,6 +67,61 @@ function metricTracker(type, entry) {
     const chars = [...text].length;
     recordMetric(type, entry, { status, ttft_ms: Math.round(ttftMs), tokens_per_second: tokens != null && generationMs > 0 ? Math.round(tokens / (generationMs / 1000) * 10) / 10 : null, chars_per_second: chars && generationMs > 0 ? Math.round(chars / (generationMs / 1000) * 10) / 10 : null, completion_tokens: tokens, generated_chars: chars });
   } };
+}
+
+const usageDb = new alasql.Database("llm_proxy_usage");
+usageDb.exec(`CREATE TABLE IF NOT EXISTS calls (
+  id STRING, at STRING, type STRING, config_id STRING, public_model STRING,
+  upstream_model STRING, status INT, input_tokens INT, cached_tokens INT,
+  output_tokens INT, cache_cost NUMBER, prefill_cost NUMBER,
+  generation_cost NUMBER, total_cost NUMBER, duration_ms INT
+)`);
+function loadUsage() {
+  try {
+    const rows = JSON.parse(fs.readFileSync(USAGE_FILE, "utf8"));
+    if (Array.isArray(rows)) for (const row of rows) usageDb.tables.calls.data.push(row);
+  } catch {}
+}
+function saveUsage() {
+  const tmp = `${USAGE_FILE}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(usageDb.exec("SELECT * FROM calls ORDER BY at DESC"), null, 2), { mode: 0o600 });
+  fs.renameSync(tmp, USAGE_FILE);
+}
+loadUsage();
+function numberOrNull(value) { const n = Number(value); return Number.isFinite(n) ? n : null; }
+function usageTokens(usage) {
+  if (!usage) return { input: null, cached: 0, output: null };
+  return {
+    input: numberOrNull(usage.prompt_tokens ?? usage.input_tokens),
+    cached: numberOrNull(usage.prompt_tokens_details?.cached_tokens ?? usage.input_tokens_details?.cached_tokens ?? usage.cache_read_input_tokens ?? usage.cached_tokens) ?? 0,
+    output: numberOrNull(usage.completion_tokens ?? usage.output_tokens)
+  };
+}
+function recordUsage(type, entry, startedAt, status, usage) {
+  const t = usageTokens(usage);
+  const cache = numberOrNull(entry.cache_price) ?? 0;
+  const prefill = numberOrNull(entry.prefill_price) ?? 0;
+  const generation = numberOrNull(entry.generation_price) ?? 0;
+  const prefillTokens = Math.max(0, (t.input ?? 0) - t.cached);
+  const cacheCost = t.cached * cache / 1_000_000;
+  const prefillCost = prefillTokens * prefill / 1_000_000;
+  const generationCost = (t.output ?? 0) * generation / 1_000_000;
+  usageDb.exec("INSERT INTO calls VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)", [
+    randomId(), new Date().toISOString(), type, entry.id, entry.public_model,
+    entry.upstream_model || entry.public_model, status ?? null, t.input, t.cached, t.output,
+    cacheCost, prefillCost, generationCost, cacheCost + prefillCost + generationCost,
+    Math.max(0, Date.now() - startedAt)
+  ]);
+  try { saveUsage(); } catch (e) { console.error("Save usage error:", e.message); }
+}
+function publicUsage() {
+  const summary = usageDb.exec(`SELECT type, config_id, public_model, COUNT(*) AS calls,
+    COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(cached_tokens), 0) AS cached_tokens,
+    COALESCE(SUM(output_tokens), 0) AS output_tokens, COALESCE(SUM(cache_cost), 0) AS cache_cost,
+    COALESCE(SUM(prefill_cost), 0) AS prefill_cost, COALESCE(SUM(generation_cost), 0) AS generation_cost,
+    COALESCE(SUM(total_cost), 0) AS total_cost FROM calls
+    GROUP BY type, config_id, public_model ORDER BY total_cost DESC`);
+  return { summary, recent: usageDb.exec("SELECT * FROM calls ORDER BY at DESC LIMIT 200") };
 }
 
 function upstreamFor(type, publicModel) { return (config[type] || []).find((x) => x.public_model === publicModel && x.enabled !== false); }
@@ -139,12 +198,12 @@ function proxyRequest(req, res, type) {
   const entry = upstreamFor(type, publicModel);
   if (!entry) return res.status(404).json({ error: { message: `No upstream configured for model: ${publicModel || "(missing)"}`, type: "model_not_configured" } });
   const fromChat = type === "responses" && entry.proxy_from_chat_completions === true;
-  if (fromChat) return proxyResponsesThroughChat(req, res, entry, original, original.stream === true ? metricTracker(type, entry) : null);
+  if (fromChat) return proxyResponsesThroughChat(req, res, entry, original, metricTracker(type, entry));
   let target;
   try { target = makeTargetUrl(entry, type); } catch (e) { return res.status(500).json({ error: { message: e.message, type: "proxy_config_error" } }); }
   let body = getBodyBuffer(req);
   if (Object.keys(original).length) body = Buffer.from(JSON.stringify({ ...original, model: entry.upstream_model || publicModel }));
-  sendUpstream(req, res, target, entry, body, null, original.stream === true ? metricTracker(type, entry) : null);
+  sendUpstream(req, res, target, entry, body, null, metricTracker(type, entry));
 }
 
 function sendUpstream(req, res, target, entry, body, onResponse, tracker = null) {
@@ -165,10 +224,10 @@ function sendUpstream(req, res, target, entry, body, onResponse, tracker = null)
     }
     res.status(proxyRes.statusCode || 502);
     for (const [key, value] of Object.entries(proxyRes.headers)) if (!hopByHop(key) && value !== undefined) res.setHeader(key, value);
-    proxyRes.pipe(res);
+    if (tracker && !String(proxyRes.headers["content-type"] || "").includes("text/event-stream")) { const chunks=[]; proxyRes.on("data",c=>chunks.push(c)); proxyRes.on("end",()=>{ const raw=Buffer.concat(chunks).toString("utf8"); let usage=null; try { usage=JSON.parse(raw)?.usage||null; } catch {} recordUsage(tracker.type,entry,tracker.startedEpoch,proxyRes.statusCode||502,usage); res.end(raw); }); } else { proxyRes.pipe(res); }
   });
   proxyReq.setTimeout(Number(process.env.UPSTREAM_TIMEOUT || 120000), () => proxyReq.destroy(new Error("Upstream request timeout")));
-  proxyReq.on("error", (err) => { console.error("Proxy request error:", err.message); if (!res.headersSent) res.status(502).json({ error: { message: err.message, type: "proxy_error" } }); else res.destroy(err); });
+  proxyReq.on("error", (err) => { if (tracker) recordUsage(tracker.type,entry,tracker.startedEpoch,502,null); console.error("Proxy request error:", err.message); if (!res.headersSent) res.status(502).json({ error: { message: err.message, type: "proxy_error" } }); else res.destroy(err); });
   if (body.length) proxyReq.write(body); proxyReq.end();
 }
 function safeModel(body) { try { return JSON.parse(body.toString("utf8")).model || ""; } catch { return ""; } }
@@ -186,6 +245,8 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
       upstream.on("data", (c) => chunks.push(c));
       upstream.on("end", () => {
         const raw = Buffer.concat(chunks).toString("utf8");
+        let usage = null; try { usage = JSON.parse(raw)?.usage || null; } catch {}
+        recordUsage("responses", entry, tracker?.startedEpoch || Date.now(), upstream.statusCode || 502, usage);
         if ((upstream.statusCode || 500) >= 400) { let message = raw; try { message = JSON.parse(raw)?.error?.message || message; } catch {} return res.status(upstream.statusCode || 502).json({ error: { message, type: "upstream_error" } }); }
         try { const data = JSON.parse(raw); const response = chatToResponse(data, body.model, responseState, body.previous_response_id); res.status(200).json(response); } catch (e) { res.status(502).json({ error: { message: e.message, type: "proxy_error" } }); }
       });
@@ -280,8 +341,9 @@ app.get("/v1/models", (req, res) => {
   res.json({ object: "list", data: [...models.values()] });
 });
 app.get("/api/config", (req, res) => res.json(sanitizeConfig()));
+app.get("/api/usage", (req, res) => res.json(publicUsage()));
 app.get("/api/metrics", (req, res) => { const result = {}; for (const type of ["chat_completions", "responses"]) result[type] = (config[type] || []).map((entry) => ({ id: entry.id, public_model: entry.public_model, upstream_model: entry.upstream_model || entry.public_model, samples: metrics[metricKey(type, entry)] || [] })); res.json(result); });
-app.put("/api/config", (req, res) => { const incoming = req.body || {}; for (const type of ["chat_completions", "responses"]) { if (!Array.isArray(incoming[type])) continue; config[type] = incoming[type].map((x) => ({ id: String(x.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`), public_model: String(x.public_model || "").trim(), url: String(x.url || "").trim(), key: x.key === "********" ? ((config[type] || []).find((old) => old.id === x.id)?.key || "") : String(x.key || ""), upstream_model: String(x.upstream_model || "").trim(), use_proxy: x.use_proxy !== false, proxy_from_chat_completions: type === "responses" ? x.proxy_from_chat_completions === true : false, enabled: x.enabled !== false })).filter((x) => x.public_model && x.url); } saveConfig(config); res.json(sanitizeConfig()); });
+app.put("/api/config", (req, res) => { const incoming = req.body || {}; for (const type of ["chat_completions", "responses"]) { if (!Array.isArray(incoming[type])) continue; config[type] = incoming[type].map((x) => ({ id: String(x.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`), public_model: String(x.public_model || "").trim(), url: String(x.url || "").trim(), key: x.key === "********" ? ((config[type] || []).find((old) => old.id === x.id)?.key || "") : String(x.key || ""), upstream_model: String(x.upstream_model || "").trim(), use_proxy: x.use_proxy !== false, proxy_from_chat_completions: type === "responses" ? x.proxy_from_chat_completions === true : false, cache_price: numberOrNull(x.cache_price) ?? 0, prefill_price: numberOrNull(x.prefill_price) ?? 0, generation_price: numberOrNull(x.generation_price) ?? 0, enabled: x.enabled !== false })).filter((x) => x.public_model && x.url); } saveConfig(config); res.json(sanitizeConfig()); });
 app.post("/api/test", async (req, res) => { const type = req.body?.type, id = req.body?.id; if (!["chat_completions", "responses"].includes(type) || !id) return res.status(400).json({ ok: false, error: "Invalid test request" }); const entry = (config[type] || []).find((x) => x.id === id); if (!entry) return res.status(404).json({ ok: false, error: "Upstream not found" }); try { const result = await performTest(entry, type); res.json({ ok: true, status: result.status, text: extractTestText(result.body, type), raw: result.body }); } catch (e) { res.status(502).json({ ok: false, error: e.message }); } });
 app.post("/api/test-all", async (req, res) => { try { const results = await runAllBenchmarks(); res.json({ ok: true, prompt: BENCHMARK_PROMPT, results }); } catch (e) { res.status(500).json({ ok: false, error: e.message }); } });
 app.get("/health", (req, res) => res.json({ ok: true }));

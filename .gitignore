@@ -1,3 +1,5 @@
 /node_modules
 /config.json
 /config.json.tmp
+/llm-usage.json
+/llm-usage.json.tmp
