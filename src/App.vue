@@ -1,6 +1,7 @@
 <script setup>
 import { onMounted, reactive, ref } from 'vue'
 import ModelBenchmark from './components/ModelBenchmark.vue'
+import MetricsPanel from './components/MetricsPanel.vue'
 
 const types = [
   { key: 'chat_completions', title: 'Chat Completions' },
@@ -85,6 +86,8 @@ onMounted(load)
       </div>
       <button class="btn primary" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存配置' }}</button>
     </header>
+
+    <MetricsPanel :configs="state" :types="types" />
 
     <ModelBenchmark :configs="state" :saved-configs="savedState" :types="types" @notice="showNotice" />
 
