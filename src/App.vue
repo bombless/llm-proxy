@@ -129,7 +129,7 @@ onUnmounted(() => {
             <span class="price-badge">预填充</span>
           </label>
           <label class="price-input-wrap">
-            <input :id="`output-price-${section.key}-${index}`" v-model.number="row.generation_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="输出价格（USD / 1M tokens）" />
+            <input :id="`output-price-${section.key}-${index}`" v-model.number="row.generation_price" type="number" min="0" step="0.000001" placeholder="输出价格（USD / 1M tokens）" />
             <span class="price-badge">输出</span>
           </label>
           <label v-if="section.key === 'responses'" class="check"><input v-model="row.proxy_from_chat_completions" type="checkbox" /> 从 Chat Completions 代理</label>
@@ -144,3 +144,47 @@ onUnmounted(() => {
   <button class="btn primary save-fab" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存配置' }}</button>
   <div v-if="notice" class="status">{{ notice }}</div>
 </template>
+
+<style>
+* { box-sizing: border-box; }
+:root { font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #17181a; background: #f6f7f9; font-synthesis: none; }
+body { margin: 0; min-width: 320px; background: #f6f7f9; }
+button, input { font: inherit; }
+button { border: 0; }
+.wrap { max-width: 1250px; margin: 0 auto; padding: 40px 18px 64px; }
+.hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 20px; }
+.eyebrow { color: #777; font-size: 11px; font-weight: 700; letter-spacing: .12em; }
+h1 { margin: 4px 0 6px; font-size: 32px; line-height: 1.1; }
+h2 { margin: 0; font-size: 19px; }
+p { margin: 0; max-width: 850px; color: #666; line-height: 1.7; }
+code { padding: 2px 5px; border-radius: 5px; background: #eceef0; }
+.card { margin: 18px 0; padding: 20px; background: #fff; border: 1px solid #e3e5e8; border-radius: 14px; box-shadow: 0 2px 8px #00000008; }
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.hint { margin-top: 5px; color: #777; font-size: 13px; }
+.btn { padding: 9px 13px; border-radius: 8px; background: #17181a; color: #fff; cursor: pointer; white-space: nowrap; }
+.btn.primary { background: #1677ff; }
+.btn.secondary { background: #eceef0; color: #222; }
+.btn.danger { background: #d83b3b; }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.save-fab { position: fixed; right: 20px; bottom: 20px; z-index: 20; padding: 12px 18px; border-radius: 10px; box-shadow: 0 6px 18px #0003; }
+.config-row { display: grid; gap: 8px; align-items: center; margin-top: 10px; }
+.config-row input:not([type="checkbox"]) { min-width: 0; padding: 10px 11px; border: 1px solid #d8dadd; border-radius: 8px; outline: none; }
+.config-row input:not([type="checkbox"]):focus { border-color: #999; box-shadow: 0 0 0 3px #0000000a; }
+.check { display: flex; align-items: center; gap: 5px; color: #444; font-size: 13px; white-space: nowrap; }
+.check input { width: 17px; height: 17px; }
+.empty { padding: 16px 0 4px; color: #999; }
+.status { position: fixed; left: 18px; top: 18px; right: auto; bottom: auto; z-index: 30; max-width: min(600px, calc(100vw - 36px)); padding: 10px 14px; border-radius: 9px; background: #17181a; color: #fff; box-shadow: 0 8px 24px #0003; }
+.result { grid-column: 1 / -1; width: 100%; margin: 0; padding: 10px; border-radius: 9px; background: #f6f7f9; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.result.error, .bench-error { color: #b42318; }
+.table-wrap { overflow-x: auto; }
+.metric { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.config-row.info { grid-template-columns: 1fr 1.3fr .9fr 1fr .85fr; }
+.config-row.price { grid-template-columns: 2fr 2fr 2fr 1fr 1fr; }
+.price-input-wrap { position: relative; display: block; min-width: 0; }
+.price-input-wrap input { width: 100%; padding-right: 58px !important; -moz-appearance: textfield; appearance: textfield; }
+.price-input-wrap input::-webkit-outer-spin-button,
+.price-input-wrap input::-webkit-inner-spin-button { margin: 0; -webkit-appearance: none; }
+.price-badge { position: absolute; top: 50%; right: 8px; transform: translateY(-50%); padding: 2px 6px; border: 1px solid #e4b72f; border-radius: 999px; background: #fff3a6; color: #6b5100; font-size: 11px; line-height: 1.3; font-weight: 700; pointer-events: none; white-space: nowrap; }
+@media (max-width: 1100px) { .config-row { grid-template-columns: 1fr 1fr; } }
+@media (max-width: 700px) { .hero, .section-head { align-items: flex-start; flex-direction: column; } .config-row { grid-template-columns: 1fr; } .wrap { padding-top: 24px; padding-bottom: 88px; } .save-fab { right: 16px; bottom: 16px; } }
+</style>
