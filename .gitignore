@@ -2,3 +2,4 @@
 /config.json
 /dist
 /llm-usage.json
+/llm-metrics.json
