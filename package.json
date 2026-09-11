@@ -4,7 +4,7 @@
   "description": "Configurable multi-provider OpenAI-compatible LLM gateway",
   "main": "server.js",
   "scripts": {
-    "start": "vite",
+    "start": "concurrently -k \"node server.js\" \"vite\"",
     "dev": "vite",
     "server": "node server.js",
     "build": "vite build",
@@ -17,6 +17,7 @@
   "type": "commonjs",
   "dependencies": {
     "@vitejs/plugin-vue": "^6.0.1",
+    "concurrently": "^9.2.1",
     "express": "^5.2.1",
     "socks-proxy-agent": "^10.1.0",
     "vite": "^7.1.7",
