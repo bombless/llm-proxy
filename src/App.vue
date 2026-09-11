@@ -10,10 +10,10 @@ const types = [
   { key: 'responses', title: 'Responses' },
 ]
 const tabs = [
-  { key: 'proxy', title: 'Chat Completions / Responses' },
-  { key: 'usage', title: 'Usage' },
-  { key: 'metrics', title: 'Metrics' },
-  { key: 'benchmark', title: 'Model Benchmark' },
+  { key: 'proxy', title: '接口配置' },
+  { key: 'usage', title: '费用统计' },
+  { key: 'metrics', title: '调用统计' },
+  { key: 'benchmark', title: '性能测试' },
 ]
 
 const activeTab = ref('proxy')
@@ -85,11 +85,6 @@ onUnmounted(() => window.removeEventListener('beforeunload', handleBeforeUnload)
 <template>
   <main class="wrap">
     <header class="hero">
-      <div>
-        <div class="eyebrow">OPENAI-COMPATIBLE GATEWAY</div>
-        <h1>LLM Proxy</h1>
-        <p>把多个 OpenAI-compatible 接口汇集到统一的 <code>/v1</code> 地址。Responses 可直接代理，也可转换成 Chat Completions。</p>
-      </div>
       <nav class="tabs" aria-label="Dashboard sections">
         <button v-for="tab in tabs" :key="tab.key" class="tab" :class="{ active: activeTab === tab.key }" @click="activeTab = tab.key">{{ tab.title }}</button>
       </nav>
