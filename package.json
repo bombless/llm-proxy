@@ -4,8 +4,8 @@
   "description": "Configurable multi-provider OpenAI-compatible LLM gateway",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
-    "test": "node --check server.js"
+    "start": "node -r ./benchmark-hook server.js",
+    "test": "node --check server.js && node --check benchmark.js && node --check benchmark-hook.js"
   },
   "keywords": ["llm", "proxy", "openai", "responses", "chat-completions"],
   "author": "",
