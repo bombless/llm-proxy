@@ -101,7 +101,6 @@ onUnmounted(() => {
         <h1>LLM Proxy</h1>
         <p>把多个 OpenAI-compatible 接口汇集到统一的 <code>/v1</code> 地址。Responses 可直接代理，也可转换成 Chat Completions。</p>
       </div>
-      <button class="btn primary" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存配置' }}</button>
     </header>
 
     <UsagePanel :configs="state" :types="types" />
@@ -128,6 +127,7 @@ onUnmounted(() => {
       </div>
     </section>
   </main>
+  <button class="btn primary save-fab" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存配置' }}</button>
   <div v-if="notice" class="status">{{ notice }}</div>
 </template>
 
