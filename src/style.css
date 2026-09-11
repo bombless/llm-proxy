@@ -25,7 +25,7 @@ code { padding: 2px 5px; border-radius: 5px; background: #eceef0; }
 .check { display: flex; align-items: center; gap: 5px; color: #444; font-size: 13px; white-space: nowrap; }
 .check input { width: 17px; height: 17px; }
 .empty { padding: 16px 0 4px; color: #999; }
-.status { position: fixed; right: 18px; bottom: 18px; z-index: 10; max-width: min(600px, calc(100vw - 36px)); padding: 10px 14px; border-radius: 9px; background: #17181a; color: #fff; box-shadow: 0 8px 24px #0003; }
+.status { position: fixed; left: 18px; top: 18px; right: auto; bottom: auto; z-index: 30; max-width: min(600px, calc(100vw - 36px)); padding: 10px 14px; border-radius: 9px; background: #17181a; color: #fff; box-shadow: 0 8px 24px #0003; }
 .result { grid-column: 1 / -1; width: 100%; margin: 0; padding: 10px; border-radius: 9px; background: #f6f7f9; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 .result.error, .bench-error { color: #b42318; }
 .benchmark { margin-top: 0; }
