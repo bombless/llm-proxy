@@ -89,3 +89,15 @@ onBeforeUnmount(() => window.clearInterval(timer))
     </div>
   </section>
 </template>
+
+<style scoped>
+.metrics-panel { margin-top: 0; }
+.metric-config { margin-top: 16px; padding-top: 14px; border-top: 1px solid #e8e9eb; }
+.metric-config:first-of-type { border-top: 0; padding-top: 0; }
+.metric-config-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.metric-type, .metric-count { margin-left: 8px; color: #777; font-size: 12px; }
+.metric-empty { margin-top: 8px; padding: 10px 12px; color: #999; background: #fafbfc; border-radius: 8px; font-size: 13px; }
+.metric-table { width: 100%; margin-top: 8px; border-collapse: collapse; font-size: 12px; }
+.metric-table th, .metric-table td { padding: 7px 8px; border-bottom: 1px solid #eef0f2; text-align: left; vertical-align: middle; }
+.metric-table th { color: #777; font-weight: 600; }
+</style>
