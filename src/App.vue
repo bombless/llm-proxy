@@ -113,23 +113,23 @@ onUnmounted(() => {
       <div v-if="!state[section.key].length" class="empty">还没有配置。</div>
       <div v-for="(row, index) in state[section.key]" :key="row.id">
         <div class="config-row info">
-          <input v-model="row.public_model" placeholder="公开模型名，如 gpt-4" />
-          <input v-model="row.url" placeholder="接口地址，如 https://.../v1/chat/completions" />
-          <input v-model="row.key" type="password" placeholder="API Key" />
-          <input v-model="row.upstream_model" placeholder="上游模型名" />
+          <input :id="`model-${section.key}-${index}`" v-model="row.public_model" placeholder="公开模型名，如 gpt-4" />
+          <input :id="`url-${section.key}-${index}`" v-model="row.url" placeholder="接口地址，如 https://.../v1/chat/completions" />
+          <input :id="`key-${section.key}-${index}`" v-model="row.key" type="password" placeholder="API Key" />
+          <input :id="`upstream-model-${section.key}-${index}`" v-model="row.upstream_model" placeholder="上游模型名" />
           <label class="check"><input v-model="row.use_proxy" type="checkbox" /> SOCKS5</label>
         </div>
         <div class="config-row price">
           <label class="price-input-wrap">
-            <input v-model.number="row.cache_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="缓存价格（USD / 1M tokens）" />
+            <input :id="`cache-price-${section.key}-${index}`" v-model.number="row.cache_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="缓存价格（USD / 1M tokens）" />
             <span class="price-badge">缓存</span>
           </label>
           <label class="price-input-wrap">
-            <input v-model.number="row.prefill_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="预填充价格（USD / 1M tokens）" />
+            <input :id="`prefill-price-${section.key}-${index}`" v-model.number="row.prefill_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="预填充价格（USD / 1M tokens）" />
             <span class="price-badge">预填充</span>
           </label>
           <label class="price-input-wrap">
-            <input v-model.number="row.generation_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="输出价格（USD / 1M tokens）" />
+            <input :id="`output-price-${section.key}-${index}`" v-model.number="row.generation_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="输出价格（USD / 1M tokens）" />
             <span class="price-badge">输出</span>
           </label>
           <label v-if="section.key === 'responses'" class="check"><input v-model="row.proxy_from_chat_completions" type="checkbox" /> 从 Chat Completions 代理</label>
