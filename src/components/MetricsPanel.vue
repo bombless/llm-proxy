@@ -56,7 +56,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
         <h2>调用统计</h2>
         <div class="hint">正常通过代理流式调用时自动记录；每个配置保留最近 10 次。TTFT 从代理收到请求开始计算。</div>
       </div>
-      <button class="btn secondary" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新' }}</button>
+      <button class="btn secondary refresh-btn" :disabled="loading" @click="load">{{ loading ? '刷新中…' : '刷新' }}</button>
     </div>
 
     <div v-if="!rows.length" class="empty">暂无配置。</div>

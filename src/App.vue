@@ -166,6 +166,7 @@ code { padding: 2px 5px; border-radius: 5px; background: #eceef0; }
 .btn.secondary { background: #eceef0; color: #222; }
 .btn.danger { background: #d83b3b; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.refresh-btn { min-width: 6em; display: inline-block; }
 .save-fab { position: fixed; right: 20px; bottom: 20px; z-index: 20; padding: 12px 18px; border-radius: 10px; box-shadow: 0 6px 18px #0003; }
 .config-row { display: grid; gap: 8px; align-items: center; margin-top: 10px; }
 .config-row input:not([type="checkbox"]) { min-width: 0; padding: 10px 11px; border: 1px solid #d8dadd; border-radius: 8px; outline: none; }
