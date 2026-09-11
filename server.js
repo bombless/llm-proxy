@@ -39,7 +39,6 @@ function makeTargetUrl(entry, type, forceChat = false) {
   if (forceChat) target.pathname = target.pathname.replace(/\/responses\/?$/, "/chat/completions");
   return target;
 }
-
 function normalizeContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
@@ -150,7 +149,7 @@ function proxyResponsesThroughChat(req, res, entry, body) {
     if ((upstream.statusCode || 500) >= 400) { res.status(upstream.statusCode || 502); upstream.pipe(res); return; }
     const responseId = `resp_${randomId()}`;
     const created = Math.floor(Date.now() / 1000);
-    const previousMessages = body.previous_response_id && responseState[body.previous_response_id] ? responseState[body.previous_response_id].messages : [];
+    const previousMessages = body.previous_response_id && responseState[body.previous_response_id] && responseState[body.previous_response_id].messages ? responseState[body.previous_response_id].messages : [];
     let fullText = "";
     let outputStarted = false;
     res.status(200); res.setHeader("content-type", "text/event-stream"); res.setHeader("cache-control", "no-cache"); res.setHeader("connection", "keep-alive");
@@ -180,7 +179,109 @@ function proxyResponsesThroughChat(req, res, entry, body) {
   });
 }
 
-async function performTest(entry, type) {
+const BENCHMARK_PROMPT = "请用中文写一段约两百字的完整回复，主题是“为什么人工智能值得学习”。只输出正文，不要标题、列表、Markdown、前言或结语说明。请尽量接近两百字。";
+function parseSseLines(buffer, onData) {
+  const lines = buffer.split(/\r?\n/);
+  return { rest: lines.pop() || "", count: lines.length, lines: lines.filter((line) => line.startsWith("data:")) };
+}
+function extractStreamDelta(data, type) {
+  if (type === "responses") {
+    if (typeof data.delta === "string" && (data.type || "").includes("output_text")) return data.delta;
+    if (typeof data.output_text?.delta === "string") return data.output_text.delta;
+    return "";
+  }
+  const delta = data.choices?.[0]?.delta?.content;
+  return typeof delta === "string" ? delta : "";
+}
+function benchmarkEntry(entry, type) {
+  return new Promise((resolve) => {
+    let target;
+    try { target = makeTargetUrl(entry, type, type === "responses" && entry.proxy_from_chat_completions === true); } catch (e) { resolve({ ok: false, error: e.message }); return; }
+    const model = entry.upstream_model || entry.public_model;
+    let body;
+    if (type === "responses") {
+      body = entry.proxy_from_chat_completions === true
+        ? responseRequestToChat({ model, input: BENCHMARK_PROMPT, stream: true }, responseState)
+        : { model, input: BENCHMARK_PROMPT, stream: true, max_output_tokens: 500 };
+    } else {
+      body = { model, messages: [{ role: "user", content: BENCHMARK_PROMPT }], stream: true, max_tokens: 500 };
+    }
+    const payload = Buffer.from(JSON.stringify(body));
+    const headers = { host: target.host, "content-type": "application/json", "content-length": payload.length, accept: "text/event-stream" };
+    if (entry.key) headers.authorization = `Bearer ${entry.key}`;
+    const transport = target.protocol === "https:" ? https : http;
+    const agent = entryUsesProxy(entry) ? new SocksProxyAgent(SOCKS5_PROXY) : undefined;
+    const options = { protocol: target.protocol, hostname: target.hostname, port: target.port || (target.protocol === "https:" ? 443 : 80), method: "POST", path: target.pathname + target.search, headers, ...(agent ? { agent } : {}) };
+    const startedAt = process.hrtime.bigint();
+    let firstTextAt = null;
+    let finishedAt = null;
+    let text = "";
+    let buffer = "";
+    let usage = null;
+    const request = transport.request(options, (response) => {
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => {
+        buffer += chunk;
+        const parsed = parseSseLines(buffer);
+        buffer = parsed.rest;
+        for (const line of parsed.lines) {
+          const raw = line.slice(5).trim();
+          if (!raw || raw === "[DONE]") continue;
+          let data; try { data = JSON.parse(raw); } catch { continue; }
+          if (data.usage) usage = data.usage;
+          const delta = extractStreamDelta(data, type === "responses" && entry.proxy_from_chat_completions === true ? "chat_completions" : type);
+          if (delta) {
+            if (firstTextAt === null) firstTextAt = process.hrtime.bigint();
+            text += delta;
+          }
+        }
+      });
+      response.on("end", () => {
+        finishedAt = process.hrtime.bigint();
+        const elapsedMs = Number(finishedAt - startedAt) / 1e6;
+        const ttftMs = firstTextAt === null ? null : Number(firstTextAt - startedAt) / 1e6;
+        const generationMs = firstTextAt === null ? null : Number(finishedAt - firstTextAt) / 1e6;
+        const completionTokens = usage?.completion_tokens ?? usage?.output_tokens ?? null;
+        const generatedChars = [...text].length;
+        resolve({
+          ok: response.statusCode >= 200 && response.statusCode < 300,
+          status: response.statusCode || 0,
+          error: response.statusCode >= 400 ? `HTTP ${response.statusCode}` : null,
+          ttft_ms: ttftMs === null ? null : Math.round(ttftMs),
+          total_ms: Math.round(elapsedMs),
+          generation_ms: generationMs === null ? null : Math.round(generationMs),
+          generated_chars: generatedChars,
+          chars_per_second: generationMs && generatedChars ? Math.round(generatedChars / (generationMs / 1000) * 10) / 10 : null,
+          completion_tokens: completionTokens,
+          tokens_per_second: completionTokens != null && generationMs > 0 ? Math.round(completionTokens / (generationMs / 1000) * 10) / 10 : null,
+          text
+        });
+      });
+      response.on("error", (e) => resolve({ ok: false, error: e.message }));
+    });
+    request.setTimeout(Number(process.env.UPSTREAM_TIMEOUT || 120000), () => request.destroy(new Error("Upstream request timeout")));
+    request.on("error", (e) => resolve({ ok: false, error: e.message }));
+    request.end(payload);
+  });
+}
+
+async function runAllBenchmarks() {
+  const entries = [];
+  for (const type of ["chat_completions", "responses"]) {
+    for (const entry of (config[type] || [])) {
+      if (entry.enabled === false || !entry.public_model || !entry.url) continue;
+      entries.push({ type, entry });
+    }
+  }
+  const results = [];
+  for (const { type, entry } of entries) {
+    const result = await benchmarkEntry(entry, type);
+    results.push({ type, id: entry.id, model: entry.public_model, upstream_model: entry.upstream_model || entry.public_model, ...result });
+  }
+  return results;
+}
+
+function performTest(entry, type) {
   return new Promise((resolve, reject) => {
     let target; try { target = makeTargetUrl(entry, type, type === "responses" && entry.proxy_from_chat_completions === true); } catch (e) { reject(e); return; }
     const model = entry.upstream_model || entry.public_model;
@@ -204,14 +305,7 @@ app.get("/v1/models", (req, res) => {
   for (const type of ["chat_completions", "responses"]) {
     for (const entry of (config[type] || [])) {
       if (entry.enabled === false || !entry.public_model) continue;
-      if (!models.has(entry.public_model)) {
-        models.set(entry.public_model, {
-          id: entry.public_model,
-          object: "model",
-          created: Number(entry.created) || 0,
-          owned_by: entry.owned_by || "llm-proxy"
-        });
-      }
+      if (!models.has(entry.public_model)) models.set(entry.public_model, { id: entry.public_model, object: "model", created: Number(entry.created) || 0, owned_by: entry.owned_by || "llm-proxy" });
     }
   }
   res.json({ object: "list", data: [...models.values()] });
@@ -219,7 +313,7 @@ app.get("/v1/models", (req, res) => {
 app.get("/api/config", (req, res) => res.json(sanitizeConfig()));
 app.put("/api/config", (req, res) => { const incoming = req.body || {}; for (const type of ["chat_completions", "responses"]) { if (!Array.isArray(incoming[type])) continue; config[type] = incoming[type].map((x) => ({ id: String(x.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`), public_model: String(x.public_model || "").trim(), url: String(x.url || "").trim(), key: x.key === "********" ? ((config[type] || []).find((old) => old.id === x.id)?.key || "") : String(x.key || ""), upstream_model: String(x.upstream_model || "").trim(), use_proxy: x.use_proxy !== false, proxy_from_chat_completions: type === "responses" ? x.proxy_from_chat_completions === true : false, enabled: x.enabled !== false })).filter((x) => x.public_model && x.url); } saveConfig(config); res.json(sanitizeConfig()); });
 app.post("/api/test", async (req, res) => { const type = req.body?.type, id = req.body?.id; if (!["chat_completions", "responses"].includes(type) || !id) return res.status(400).json({ ok: false, error: "Invalid test request" }); const entry = (config[type] || []).find((x) => x.id === id); if (!entry) return res.status(404).json({ ok: false, error: "Upstream not found" }); try { const result = await performTest(entry, type); res.json({ ok: true, status: result.status, text: extractTestText(result.body, type), raw: result.body }); } catch (e) { res.status(502).json({ ok: false, error: e.message }); } });
+app.post("/api/test-all", async (req, res) => { try { const results = await runAllBenchmarks(); res.json({ ok: true, prompt: BENCHMARK_PROMPT, results }); } catch (e) { res.status(500).json({ ok: false, error: e.message }); } });
 app.get("/health", (req, res) => res.json({ ok: true }));
-
 app.get("/", (req, res) => res.sendFile(path.join(__dirname, "index.html")));
 app.listen(LISTEN_PORT, LISTEN_HOST, () => console.log(`LLM Proxy listening on http://${LISTEN_HOST}:${LISTEN_PORT}`));
