@@ -90,10 +90,10 @@ onUnmounted(() => window.removeEventListener('beforeunload', handleBeforeUnload)
       </nav>
     </header>
 
-    <ProxyConfigPanel v-if="activeTab === 'proxy'" :state="state" :saved-state="savedState" :types="types" :row-results="rowResults" @add="addRow" @remove="removeRow" @test="testRow" />
-    <UsagePanel v-else-if="activeTab === 'usage'" :configs="state" :types="types" />
-    <MetricsPanel v-else-if="activeTab === 'metrics'" :configs="state" :types="types" />
-    <ModelBenchmark v-else :configs="state" :saved-configs="savedState" :types="types" @notice="showNotice" />
+    <ProxyConfigPanel v-show="activeTab === 'proxy'" :state="state" :saved-state="savedState" :types="types" :row-results="rowResults" @add="addRow" @remove="removeRow" @test="testRow" />
+    <UsagePanel v-show="activeTab === 'usage'" :configs="state" :types="types" />
+    <MetricsPanel v-show="activeTab === 'metrics'" :configs="state" :types="types" />
+    <ModelBenchmark v-show="activeTab === 'benchmark'" :configs="state" :saved-configs="savedState" :types="types" @notice="showNotice" />
   </main>
   <button class="btn primary save-fab" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存配置' }}</button>
   <div v-if="notice" class="status">{{ notice }}</div>
