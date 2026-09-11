@@ -112,19 +112,24 @@ onUnmounted(() => {
     <section v-for="section in types" :key="section.key" class="card">
       <div class="section-head"><div><h2>{{ section.title }}</h2><div class="hint">公开模型名 → 上游地址 / Key / 上游模型名 / 代理 / 价格（USD / 1M tokens）</div></div><button class="btn secondary" @click="addRow(section.key)">＋ 添加</button></div>
       <div v-if="!state[section.key].length" class="empty">还没有配置。</div>
-      <div v-for="(row, index) in state[section.key]" :key="row.id" class="config-row">
-        <input v-model="row.public_model" placeholder="公开模型名，如 gpt-4" />
-        <input v-model="row.url" placeholder="接口地址，如 https://.../v1/chat/completions" />
-        <input v-model="row.key" type="password" placeholder="API Key" />
-        <input v-model="row.upstream_model" placeholder="上游模型名" />
-        <input v-model.number="row.cache_price" type="number" min="0" step="0.000001" placeholder="缓存 $/1M" />
-        <input v-model.number="row.prefill_price" type="number" min="0" step="0.000001" placeholder="预填充 $/1M" />
-        <input v-model.number="row.generation_price" type="number" min="0" step="0.000001" placeholder="生成 $/1M" />
-        <label class="check"><input v-model="row.use_proxy" type="checkbox" /> SOCKS5</label>
-        <label v-if="section.key === 'responses'" class="check"><input v-model="row.proxy_from_chat_completions" type="checkbox" /> 从 Chat Completions 代理</label>
-        <button v-if="isSaved(section.key, row)" class="btn secondary" @click="testRow(section.key, row)">{{ rowResults[`${section.key}:${row.id}`]?.loading ? '测试中…' : '测试“你好”' }}</button>
-        <button class="btn danger" @click="removeRow(section.key, index)">删除</button>
+      <div v-for="(row, index) in state[section.key]" :key="row.id">
+        <div class="config-row info">
+          <input v-model="row.public_model" placeholder="公开模型名，如 gpt-4" />
+          <input v-model="row.url" placeholder="接口地址，如 https://.../v1/chat/completions" />
+          <input v-model="row.key" type="password" placeholder="API Key" />
+          <input v-model="row.upstream_model" placeholder="上游模型名" />
+          <label class="check"><input v-model="row.use_proxy" type="checkbox" /> SOCKS5</label>
+        </div>
+        <div class="config-row price">
+          <input v-model.number="row.cache_price" type="number" min="0" step="0.000001" placeholder="缓存 $/1M" />
+          <input v-model.number="row.prefill_price" type="number" min="0" step="0.000001" placeholder="预填充 $/1M" />
+          <input v-model.number="row.generation_price" type="number" min="0" step="0.000001" placeholder="生成 $/1M" />
+          <label v-if="section.key === 'responses'" class="check"><input v-model="row.proxy_from_chat_completions" type="checkbox" /> 从 Chat Completions 代理</label>
+          <button v-if="isSaved(section.key, row)" class="btn secondary" @click="testRow(section.key, row)">{{ rowResults[`${section.key}:${row.id}`]?.loading ? '测试中…' : '测试“你好”' }}</button>
+          <button class="btn danger" @click="removeRow(section.key, index)">删除</button>
+        </div>
         <pre v-if="rowResults[`${section.key}:${row.id}`]" class="result" :class="{ error: rowResults[`${section.key}:${row.id}`].error }">{{ rowResults[`${section.key}:${row.id}`].text }}</pre>
+        <hr/>
       </div>
     </section>
   </main>

@@ -17,7 +17,7 @@ code { padding: 2px 5px; border-radius: 5px; background: #eceef0; }
 .btn.secondary { background: #eceef0; color: #222; }
 .btn.danger { background: #d83b3b; }
 .btn:disabled { opacity: .5; cursor: not-allowed; }
-.config-row { display: grid; grid-template-columns: 1fr 1.3fr .9fr 1fr auto auto auto auto; gap: 8px; align-items: center; margin-top: 10px; }
+.config-row { display: grid; gap: 8px; align-items: center; margin-top: 10px; }
 .config-row input:not([type="checkbox"]) { min-width: 0; padding: 10px 11px; border: 1px solid #d8dadd; border-radius: 8px; outline: none; }
 .config-row input:not([type="checkbox"]):focus { border-color: #999; box-shadow: 0 0 0 3px #0000000a; }
 .check { display: flex; align-items: center; gap: 5px; color: #444; font-size: 13px; white-space: nowrap; }
@@ -61,4 +61,5 @@ code { padding: 2px 5px; border-radius: 5px; background: #eceef0; }
 .usage-grid strong { display: block; margin-top: 4px; font-size: 13px; font-variant-numeric: tabular-nums; }
 @media (max-width: 900px) { .usage-grid { grid-template-columns: repeat(3, 1fr); } }
 @media (max-width: 600px) { .usage-grid { grid-template-columns: repeat(2, 1fr); } }
-.config-row { grid-template-columns: 1fr 1.3fr .9fr 1fr .85fr .85fr .85fr auto auto auto auto; }
+.config-row.info { grid-template-columns: 1fr 1.3fr .9fr 1fr .85fr; }
+.config-row.price { grid-template-columns: 2fr 2fr 2fr 1fr 1fr; }
