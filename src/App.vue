@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import ModelBenchmark from './components/ModelBenchmark.vue'
 import MetricsPanel from './components/MetricsPanel.vue'
 import UsagePanel from './components/UsagePanel.vue'
@@ -23,12 +23,21 @@ function isSaved(type, x) {
   const old = savedState[type].find(y => y.id === x.id)
   return !!old && JSON.stringify(snapshot(old)) === JSON.stringify(snapshot(x))
 }
+const hasUnsavedChanges = computed(() => types.some(({ key }) => {
+  return JSON.stringify(state[key].map(snapshot)) !== JSON.stringify(savedState[key].map(snapshot))
+}))
 function makeRow() {
   return { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, public_model: '', url: '', key: '', upstream_model: '', use_proxy: true, proxy_from_chat_completions: false, cache_price: 0, prefill_price: 0, generation_price: 0, enabled: true }
 }
 function addRow(type) { state[type].push(makeRow()) }
 function removeRow(type, index) { state[type].splice(index, 1) }
 function showNotice(message) { notice.value = message; window.clearTimeout(showNotice.timer); showNotice.timer = window.setTimeout(() => notice.value = '', 2200) }
+
+function handleBeforeUnload(event) {
+  if (!hasUnsavedChanges.value) return
+  event.preventDefault()
+  event.returnValue = ''
+}
 
 async function load() {
   try {
@@ -74,7 +83,14 @@ async function testRow(type, row) {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  window.addEventListener('beforeunload', handleBeforeUnload)
+  load()
+})
+
+onUnmounted(() => {
+  window.removeEventListener('beforeunload', handleBeforeUnload)
+})
 </script>
 
 <template>
