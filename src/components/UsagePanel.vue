@@ -46,6 +46,17 @@ onBeforeUnmount(() => window.clearInterval(timer))
 </template>
 
 <style scoped>
+.usage-total { display: flex; align-items: center; gap: 10px; font-weight: 700; }
 .usage-total-tokens, .usage-cost-tokens { font-size: 0.85em; font-weight: normal; opacity: 0.75; }
+.usage-config { margin-top: 16px; padding-top: 14px; border-top: 1px solid #e8e9eb; }
+.usage-config:first-of-type { border-top: 0; padding-top: 0; }
+.usage-config-head { display: flex; justify-content: space-between; gap: 12px; }
+.metric-type { margin-left: 8px; color: #777; font-size: 12px; }
+.usage-grid { display: grid; grid-template-columns: repeat(7, minmax(90px, 1fr)); gap: 8px; margin-top: 10px; }
+.usage-grid div { padding: 10px; border-radius: 8px; background: #fafbfc; }
+.usage-grid span { display: block; color: #777; font-size: 11px; }
+.usage-grid strong { display: block; margin-top: 4px; font-size: 13px; font-variant-numeric: tabular-nums; }
 .usage-grid small { font-size: 0.8em; font-weight: normal; opacity: 0.75; }
+@media (max-width: 900px) { .usage-grid { grid-template-columns: repeat(3, 1fr); } }
+@media (max-width: 600px) { .usage-grid { grid-template-columns: repeat(2, 1fr); } }
 </style>
