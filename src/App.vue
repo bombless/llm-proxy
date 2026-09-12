@@ -4,6 +4,7 @@ import ErrorStats from './components/ErrorStats.vue'
 import ModelBenchmark from './components/ModelBenchmark.vue'
 import MetricsPanel from './components/MetricsPanel.vue'
 import ProxyConfigPanel from './components/ProxyConfigPanel.vue'
+import ResponseSessions from './components/ResponseSessions.vue'
 import UsagePanel from './components/UsagePanel.vue'
 
 const types = [
@@ -12,6 +13,7 @@ const types = [
 ]
 const tabs = [
   { key: 'proxy', title: '接口配置' },
+  { key: 'sessions', title: 'Responses 会话' },
   { key: 'usage', title: '费用统计' },
   { key: 'metrics', title: '调用统计' },
   { key: 'errors', title: '错误统计' },
@@ -93,6 +95,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', handleBeforeUnload)
     </header>
 
     <ProxyConfigPanel v-show="activeTab === 'proxy'" :state="state" :saved-state="savedState" :types="types" :row-results="rowResults" @add="addRow" @remove="removeRow" @test="testRow" />
+    <ResponseSessions v-show="activeTab === 'sessions'" />
     <UsagePanel v-show="activeTab === 'usage'" :configs="state" :types="types" />
     <MetricsPanel v-show="activeTab === 'metrics'" :configs="state" :types="types" />
     <ErrorStats v-show="activeTab === 'errors'" :configs="state" :types="types" />
