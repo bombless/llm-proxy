@@ -17,6 +17,9 @@ function isSaved(type, x) {
   const old = props.savedState[type].find(y => y.id === x.id)
   return !!old && JSON.stringify(snapshot(old)) === JSON.stringify(snapshot(x))
 }
+function clearZeroOnFocus(row, field) {
+  if (Number(row[field]) === 0) row[field] = ''
+}
 </script>
 
 <template>
@@ -34,9 +37,9 @@ function isSaved(type, x) {
           <button class="btn danger" @click="emit('remove', section.key, index)">删除</button>
         </div>
         <div class="config-row price">
-          <label class="price-input-wrap"><input v-model.number="row.cache_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="缓存价格（USD / 1M tokens）" /><span class="price-badge">缓存</span></label>
-          <label class="price-input-wrap"><input v-model.number="row.prefill_price" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="预填充价格（USD / 1M tokens）" /><span class="price-badge">预填充</span></label>
-          <label class="price-input-wrap"><input v-model.number="row.generation_price" type="number" min="0" step="0.000001" placeholder="输出价格（USD / 1M tokens）" /><span class="price-badge">输出</span></label>
+          <label class="price-input-wrap"><input v-model.number="row.cache_price" @focus="clearZeroOnFocus(row, 'cache_price')" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="缓存价格（USD / 1M tokens）" /><span class="price-badge">缓存</span></label>
+          <label class="price-input-wrap"><input v-model.number="row.prefill_price" @focus="clearZeroOnFocus(row, 'prefill_price')" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="预填充价格（USD / 1M tokens）" /><span class="price-badge">预填充</span></label>
+          <label class="price-input-wrap"><input v-model.number="row.generation_price" @focus="clearZeroOnFocus(row, 'generation_price')" type="number" min="0" step="0.000001" placeholder="输出价格（USD / 1M tokens）" /><span class="price-badge">输出</span></label>
           <label v-if="section.key === 'responses'" class="check"><input v-model="row.proxy_from_chat_completions" type="checkbox" /> 从 Chat Completions 代理</label>
           <button v-if="isSaved(section.key, row)" class="btn secondary" @click="emit('test', section.key, row)">{{ rowResults[`${section.key}:${row.id}`]?.loading ? '测试中…' : '测试“你好”' }}</button>
 
