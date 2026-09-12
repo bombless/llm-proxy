@@ -138,58 +138,112 @@ function makeTargetUrl(entry, type, forceChat = false) {
   if (forceChat) target.pathname = target.pathname.replace(/\/responses\/?$/, "/chat/completions");
   return target;
 }
+function contentPartToChat(part) {
+  if (typeof part === "string") return { type: "text", text: part };
+  if (!part || typeof part !== "object") return null;
+  if (part.type === "input_text" || part.type === "output_text" || part.type === "text") return { type: "text", text: part.text || "" };
+  if (part.type === "input_image" || part.type === "image_url") {
+    const url = part.image_url?.url || part.image_url || part.url;
+    return url ? { type: "image_url", image_url: { url } } : null;
+  }
+  if (part.type === "input_audio" || part.type === "audio") {
+    return part.input_audio ? { type: "input_audio", input_audio: part.input_audio } : null;
+  }
+  return null;
+}
 function normalizeContent(content) {
   if (typeof content === "string") return content;
   if (!Array.isArray(content)) return "";
-  return content.map((x) => typeof x === "string" ? x : (x.text || "")).join("");
+  return content.map((x) => typeof x === "string" ? x : (x?.text || "")).join("");
+}
+function responseContentToChat(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  const parts = content.map(contentPartToChat).filter(Boolean);
+  return parts.length === 1 && parts[0].type === "text" ? parts[0].text : parts;
 }
 function responseInputToMessages(input) {
   if (typeof input === "string") return [{ role: "user", content: input }];
   if (!Array.isArray(input)) return [];
-  return input.map((item) => {
-    if (typeof item === "string") return { role: "user", content: item };
+  const messages = [];
+  for (const item of input) {
+    if (typeof item === "string") { messages.push({ role: "user", content: item }); continue; }
+    if (!item || typeof item !== "object") continue;
+    if (item.type === "function_call_output") {
+      messages.push({ role: "tool", tool_call_id: item.call_id, content: typeof item.output === "string" ? item.output : JSON.stringify(item.output ?? "") });
+      continue;
+    }
+    if (item.type === "function_call") {
+      messages.push({ role: "assistant", tool_calls: [{ id: item.call_id || item.id, type: "function", function: { name: item.name, arguments: item.arguments || "" } }] });
+      continue;
+    }
     const role = item.role || (item.type === "message" ? "user" : "user");
-    if (item.type === "message") return { role, content: normalizeContent(item.content) };
-    if (item.type === "input_text") return { role: "user", content: item.text || "" };
-    if (item.type === "output_text") return { role: "assistant", content: item.text || "" };
-    return { role, content: normalizeContent(item.content || item.text || "") };
-  }).filter((x) => x.content !== "");
+    const content = responseContentToChat(item.content ?? item.text ?? "");
+    if ((typeof content === "string" && content !== "") || (Array.isArray(content) && content.length)) messages.push({ role, content });
+  }
+  return messages;
 }
 function responseRequestToChat(body, state) {
-  const messages = [];
-  if (body.instructions) messages.push({ role: "system", content: normalizeContent(body.instructions) });
+  const currentMessages = [];
+  if (body.instructions) currentMessages.push({ role: "system", content: responseContentToChat(body.instructions) });
+  let messages = [...currentMessages];
   if (body.previous_response_id) {
     const previous = state[body.previous_response_id];
     if (!previous) throw new Error(`Unknown previous_response_id: ${body.previous_response_id}`);
-    messages.push(...previous.messages);
+    messages = [...previous.messages, ...currentMessages];
   }
-  messages.push(...responseInputToMessages(body.input));
-  const chat = { ...body, model: body.model, messages };
-  delete chat.input; delete chat.instructions; delete chat.previous_response_id; delete chat.max_output_tokens;
-  if (body.max_output_tokens != null) chat.max_tokens = body.max_output_tokens;
-  delete chat.store; delete chat.background; delete chat.include; delete chat.service_tier; delete chat.prompt_cache_key;
+  const requestMessages = responseInputToMessages(body.input);
+  currentMessages.push(...requestMessages);
+  messages.push(...requestMessages);
+  const chat = { model: body.model, messages };
+  const allowed = ["temperature", "top_p", "stream", "stop", "presence_penalty", "frequency_penalty", "seed", "response_format", "logprobs", "top_logprobs", "n"];
+  for (const key of allowed) if (body[key] !== undefined) chat[key] = body[key];
+  if (body.max_output_tokens != null) chat.max_completion_tokens = body.max_output_tokens;
+  if (body.max_tokens != null) chat.max_tokens = body.max_tokens;
   if (Array.isArray(body.tools)) chat.tools = body.tools.filter((x) => x.type === "function").map((x) => ({ type: "function", function: { name: x.name || x.function?.name, description: x.description || x.function?.description, parameters: x.parameters || x.function?.parameters } }));
-  if (body.tool_choice && body.tool_choice.type === "function") chat.tool_choice = { type: "function", function: { name: body.tool_choice.name || body.tool_choice.function?.name } };
-  return chat;
+  if (body.tool_choice !== undefined) {
+    chat.tool_choice = body.tool_choice === "function" ? "required" : body.tool_choice;
+    if (body.tool_choice?.type === "function") chat.tool_choice = { type: "function", function: { name: body.tool_choice.name || body.tool_choice.function?.name } };
+  }
+  return { chat, requestMessages: currentMessages };
+}
+function responseUsage(usage) {
+  if (!usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+  const input = numberOrNull(usage.input_tokens ?? usage.prompt_tokens) ?? 0;
+  const output = numberOrNull(usage.output_tokens ?? usage.completion_tokens) ?? 0;
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    total_tokens: numberOrNull(usage.total_tokens) ?? input + output,
+    ...(usage.input_tokens_details || usage.prompt_tokens_details ? { input_tokens_details: usage.input_tokens_details || usage.prompt_tokens_details } : {})
+  };
+}
+function chatAssistantMessageToHistory(message) {
+  const result = { role: "assistant", content: message?.content || "" };
+  if (message?.tool_calls?.length) result.tool_calls = message.tool_calls.map((call) => ({ id: call.id, type: "function", function: { name: call.function?.name, arguments: call.function?.arguments || "" } }));
+  return result;
 }
 function chatMessageToResponseOutput(message) {
   const content = message?.content;
   const output = [{ id: `msg_${randomId()}`, type: "message", role: "assistant", status: "completed", content: [] }];
   if (typeof content === "string" && content) output[0].content.push({ type: "output_text", text: content, annotations: [] });
-  else if (Array.isArray(content)) for (const part of content) if (part.text) output[0].content.push({ type: "output_text", text: part.text, annotations: [] });
-  if (message?.tool_calls?.length) for (const call of message.tool_calls) output.push({ id: call.id || `fc_${randomId()}`, type: "function_call", status: "completed", name: call.function?.name, arguments: call.function?.arguments || "", call_id: call.id || `call_${randomId()}` });
+  else if (Array.isArray(content)) for (const part of content) if (part?.text) output[0].content.push({ type: "output_text", text: part.text, annotations: [] });
+  if (message?.tool_calls?.length) for (const call of message.tool_calls) {
+    const callId = call.id || `call_${randomId()}`;
+    output.push({ id: `fc_${randomId()}`, type: "function_call", status: "completed", name: call.function?.name, arguments: call.function?.arguments || "", call_id: callId });
+  }
   return output;
 }
 function randomId() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
-function chatToResponse(data, publicModel, state, previousId) {
+function chatToResponse(data, publicModel, state, previousId, requestMessages = []) {
   const id = `resp_${randomId()}`;
   const message = data.choices?.[0]?.message || { role: "assistant", content: "" };
   const output = chatMessageToResponseOutput(message);
-  const assistantMessages = [{ role: "assistant", content: normalizeContent(message.content) }];
-  state[id] = { messages: [...(previousId && state[previousId] ? state[previousId].messages : []), ...assistantMessages], created_at: Math.floor(Date.now() / 1000) };
+  const assistantMessages = [chatAssistantMessageToHistory(message)];
+  state[id] = { messages: [...(previousId && state[previousId] ? state[previousId].messages : []), ...requestMessages, ...assistantMessages], created_at: Math.floor(Date.now() / 1000) };
   saveResponseState();
   const text = output.flatMap((x) => x.content || []).filter((x) => x.type === "output_text").map((x) => x.text).join("");
-  return { id, object: "response", created_at: state[id].created_at, status: "completed", error: null, incomplete_details: null, instructions: null, max_output_tokens: null, model: publicModel, output, parallel_tool_calls: true, previous_response_id: previousId || null, reasoning: { effort: null, summary: null }, service_tier: null, store: true, temperature: data.temperature ?? null, text: { format: { type: "text" } }, tool_choice: data.tool_choice || "auto", tools: data.tools || [], top_p: data.top_p ?? null, truncation: "disabled", usage: data.usage || null, user: null, metadata: {}, output_text: text };
+  return { id, object: "response", created_at: state[id].created_at, status: "completed", error: null, incomplete_details: null, instructions: null, max_output_tokens: null, model: publicModel, output, parallel_tool_calls: true, previous_response_id: previousId || null, reasoning: { effort: null, summary: null }, service_tier: null, store: true, temperature: data.temperature ?? null, text: { format: { type: "text" } }, tool_choice: data.tool_choice || "auto", tools: data.tools || [], top_p: data.top_p ?? null, truncation: "disabled", usage: responseUsage(data.usage), metadata: {}, output_text: text };
 }
 
 function proxyRequest(req, res, type) {
@@ -206,11 +260,24 @@ function proxyRequest(req, res, type) {
   sendUpstream(req, res, target, entry, body, null, metricTracker(type, entry));
 }
 
+function shellQuote(value) { return `'${String(value).replace(/'/g, `'\\''`)}'`; }
+function logCurl(req, target, headers, body) {
+  if (!String(req.originalUrl || "").startsWith("/api/test")) return;
+  const parts = [`curl -i -X ${shellQuote(req.method || "POST")}`, shellQuote(target.href)];
+  for (const [key, value] of Object.entries(headers)) {
+    if (value === undefined || value === null) continue;
+    const shown = key.toLowerCase() === "authorization" && !process.env.LOG_CURL_SECRETS ? String(value).replace(/Bearer\s+.+/i, "Bearer <redacted>") : value;
+    parts.push(`-H ${shellQuote(`${key}: ${shown}`)}`);
+  }
+  if (body.length) parts.push(`--data-raw ${shellQuote(body.toString("utf8"))}`);
+  console.log(`[api/test curl] ${parts.join(" ")}`);
+}
 function sendUpstream(req, res, target, entry, body, onResponse, tracker = null) {
   const headers = {};
   for (const [key, value] of Object.entries(req.headers)) if (!hopByHop(key)) headers[key] = value;
   headers.host = target.host; headers["content-length"] = body.length;
   if (entry.key) headers.authorization = `Bearer ${entry.key}`;
+  logCurl(req, target, headers, body);
   const transport = target.protocol === "https:" ? https : http;
   const agent = entryUsesProxy(entry) ? new SocksProxyAgent(SOCKS5_PROXY) : undefined;
   const options = { protocol: target.protocol, hostname: target.hostname, port: target.port || (target.protocol === "https:" ? 443 : 80), method: req.method, path: target.pathname + target.search, headers, ...(agent ? { agent } : {}) };
@@ -234,9 +301,12 @@ function safeModel(body) { try { return JSON.parse(body.toString("utf8")).model 
 
 function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
   let chatBody;
-  try { chatBody = responseRequestToChat(body, responseState); } catch (e) { return res.status(400).json({ error: { message: e.message, type: "invalid_request_error" } }); }
+  let requestMessages;
+  try { ({ chat: chatBody, requestMessages } = responseRequestToChat(body, responseState)); } catch (e) { return res.status(400).json({ error: { message: e.message, type: "invalid_request_error" } }); }
   chatBody.model = entry.upstream_model || body.model;
-  const target = (() => { try { return makeTargetUrl(entry, "responses", true); } catch (e) { throw e; } })();
+  if (body.stream && (!chatBody.stream_options || chatBody.stream_options.include_usage === undefined)) chatBody.stream_options = { ...(chatBody.stream_options || {}), include_usage: true };
+  let target;
+  try { target = makeTargetUrl(entry, "responses", true); } catch (e) { return res.status(500).json({ error: { message: e.message, type: "proxy_config_error" } }); }
   const payload = Buffer.from(JSON.stringify(chatBody));
   const isStream = body.stream === true;
   sendUpstream(req, res, target, entry, payload, (upstream) => {
@@ -248,7 +318,7 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
         let usage = null; try { usage = JSON.parse(raw)?.usage || null; } catch {}
         recordUsage("responses", entry, tracker?.startedEpoch || Date.now(), upstream.statusCode || 502, usage);
         if ((upstream.statusCode || 500) >= 400) { let message = raw; try { message = JSON.parse(raw)?.error?.message || message; } catch {} return res.status(upstream.statusCode || 502).json({ error: { message, type: "upstream_error" } }); }
-        try { const data = JSON.parse(raw); const response = chatToResponse(data, body.model, responseState, body.previous_response_id); res.status(200).json(response); } catch (e) { res.status(502).json({ error: { message: e.message, type: "proxy_error" } }); }
+        try { const data = JSON.parse(raw); const response = chatToResponse(data, body.model, responseState, body.previous_response_id, requestMessages); res.status(200).json(response); } catch (e) { res.status(502).json({ error: { message: e.message, type: "proxy_error" } }); }
       });
       return;
     }
@@ -256,8 +326,12 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
     const responseId = `resp_${randomId()}`;
     const created = Math.floor(Date.now() / 1000);
     const previousMessages = body.previous_response_id && responseState[body.previous_response_id] && responseState[body.previous_response_id].messages ? responseState[body.previous_response_id].messages : [];
+    const itemId = `msg_${randomId()}`;
     let fullText = "";
     let outputStarted = false;
+    let finishReason = null;
+    let streamUsage = null;
+    const streamToolCalls = new Map();
     res.status(200); res.setHeader("content-type", "text/event-stream"); res.setHeader("cache-control", "no-cache"); res.setHeader("connection", "keep-alive");
     const emit = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     emit("response.created", { type: "response.created", response: { id: responseId, object: "response", created_at: created, status: "in_progress", model: body.model, output: [], previous_response_id: body.previous_response_id || null } });
@@ -271,15 +345,35 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
         if (!line.startsWith("data:")) continue;
         const raw = line.slice(5).trim(); if (!raw || raw === "[DONE]") continue;
         let data; try { data = JSON.parse(raw); } catch { continue; }
-        const delta = data.choices?.[0]?.delta?.content;
-        if (delta) { if (!outputStarted) { outputStarted = true; emit("response.output_item.added", { type: "response.output_item.added", output_index: 0, item: { id: `msg_${randomId()}`, type: "message", role: "assistant", status: "in_progress", content: [] } }); } fullText += delta; emit("response.output_text.delta", { type: "response.output_text.delta", item_id: "", output_index: 0, content_index: 0, delta }); }
+        if (data.usage) streamUsage = data.usage;
+        const choice = data.choices?.[0];
+        finishReason = choice?.finish_reason || finishReason;
+        const deltaObject = choice?.delta || {};
+        for (const call of deltaObject.tool_calls || []) {
+          const index = call.index ?? 0;
+          const current = streamToolCalls.get(index) || { id: call.id || `call_${randomId()}`, name: "", arguments: "" };
+          if (call.id) current.id = call.id;
+          if (call.function?.name) current.name += call.function.name;
+          if (call.function?.arguments) current.arguments += call.function.arguments;
+          streamToolCalls.set(index, current);
+        }
+        const delta = deltaObject.content;
+        if (delta) { if (!outputStarted) { outputStarted = true; emit("response.output_item.added", { type: "response.output_item.added", output_index: 0, item: { id: itemId, type: "message", role: "assistant", status: "in_progress", content: [] } }); } fullText += delta; emit("response.output_text.delta", { type: "response.output_text.delta", item_id: itemId, output_index: 0, content_index: 0, delta }); }
       }
     });
     upstream.on("end", () => {
-      const messages = [...previousMessages, { role: "assistant", content: fullText }];
+      const toolOutputs = [...streamToolCalls.values()].map((call) => ({ id: `fc_${randomId()}`, type: "function_call", status: "completed", name: call.name, arguments: call.arguments, call_id: call.id }));
+      for (const item of toolOutputs) emit("response.output_item.done", { type: "response.output_item.done", output_index: 1, item });
+      const messages = [...previousMessages, ...requestMessages];
+      if (outputStarted || fullText || toolOutputs.length) {
+        const assistant = { role: "assistant", content: fullText };
+        if (streamToolCalls.size) assistant.tool_calls = [...streamToolCalls.values()].map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }));
+        messages.push(assistant);
+      }
       responseState[responseId] = { messages, created_at: created }; saveResponseState();
-      if (outputStarted) emit("response.output_text.done", { type: "response.output_text.done", item_id: "", output_index: 0, content_index: 0, text: fullText });
-      emit("response.completed", { type: "response.completed", response: { id: responseId, object: "response", created_at: created, status: "completed", model: body.model, output: [{ id: `msg_${randomId()}`, type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text: fullText, annotations: [] }] }], previous_response_id: body.previous_response_id || null, output_text: fullText } });
+      if (outputStarted) emit("response.output_text.done", { type: "response.output_text.done", item_id: itemId, output_index: 0, content_index: 0, text: fullText });
+      const completedStatus = finishReason === "length" ? "incomplete" : "completed";
+      emit("response.completed", { type: "response.completed", response: { id: responseId, object: "response", created_at: created, status: completedStatus, model: body.model, output: [...(fullText || outputStarted ? [{ id: itemId, type: "message", role: "assistant", status: completedStatus, content: [{ type: "output_text", text: fullText, annotations: [] }] }] : []), ...toolOutputs], previous_response_id: body.previous_response_id || null, output_text: fullText, incomplete_details: finishReason === "length" ? { reason: "max_output_tokens" } : null, usage: responseUsage(streamUsage) } });
       if (tracker) tracker.finish(200);
       res.end();
     });
@@ -293,17 +387,45 @@ function parseSseLines(buffer, onData) {
   return { rest: lines.pop() || "", done: lines.filter((line) => line.startsWith("data:")).map((line) => line.slice(5).trim()).filter(Boolean).map((raw) => { try { return JSON.parse(raw); } catch { return null; } }).filter(Boolean).map(onData) };
 }
 function extractTestText(raw, type) {
-  try { const data = JSON.parse(raw); if (type === "responses") return data.output_text || data.output?.flatMap((x) => x.content || []).filter((x) => x.type === "output_text").map((x) => x.text).join("") || ""; return data.choices?.[0]?.message?.content || ""; } catch { return raw; }
+  try {
+    const data = JSON.parse(raw);
+    if (type === "responses") {
+      const responseText = data.output_text || data.output?.flatMap((x) => x.content || []).filter((x) => x.type === "output_text").map((x) => x.text || "").join("") || "";
+      if (responseText) return responseText;
+      // /api/test for a Responses entry configured to proxy through Chat Completions
+      // receives the upstream Chat Completions JSON before it is wrapped as a Response.
+      const content = data.choices?.[0]?.message?.content;
+      if (typeof content === "string") return content;
+      if (Array.isArray(content)) return content.map((part) => part?.text || "").join("");
+      return data.choices?.[0]?.text || "";
+    }
+    const content = data.choices?.[0]?.message?.content;
+    if (typeof content === "string") return content;
+    if (Array.isArray(content)) return content.map((part) => part?.text || "").join("");
+    return data.choices?.[0]?.text || "";
+  } catch { return raw; }
 }
 function performTest(entry, type) {
-  const body = type === "responses" ? { model: entry.upstream_model || entry.public_model, input: "你好" } : { model: entry.upstream_model || entry.public_model, messages: [{ role: "user", content: "你好" }] };
+  const originalBody = type === "responses" ? { model: entry.upstream_model || entry.public_model, input: "你好" } : { model: entry.upstream_model || entry.public_model, messages: [{ role: "user", content: "你好" }] };
+  const fromChat = type === "responses" && entry.proxy_from_chat_completions === true;
+  let body = originalBody;
+  let target;
+  try {
+    if (fromChat) {
+      body = responseRequestToChat(originalBody, responseState).chat;
+      body.model = entry.upstream_model || originalBody.model;
+      target = makeTargetUrl(entry, "responses", true);
+    } else target = makeTargetUrl(entry, type);
+  } catch (e) { return Promise.reject(e); }
+  const payload = Buffer.from(JSON.stringify(body));
   return new Promise((resolve, reject) => {
-    let target; try { target = makeTargetUrl(entry, type); } catch (e) { reject(e); return; }
-    const payload = Buffer.from(JSON.stringify(body));
     const fakeReq = { method: "POST", headers: { "content-type": "application/json" }, originalUrl: `/api/test/${type}` };
     const fakeRes = { headersSent: false, statusCode: 200, status() { return this; }, setHeader() {}, json(value) { reject(new Error(value?.error?.message || "test failed")); }, destroy(err) { reject(err); } };
     sendUpstream(fakeReq, { ...fakeRes, status(code) { this.statusCode = code; return this; } }, target, entry, payload, (upstream) => {
-      const chunks = []; upstream.on("data", (chunk) => chunks.push(chunk)); upstream.on("end", () => resolve({ status: upstream.statusCode || 502, body: Buffer.concat(chunks).toString("utf8") })); upstream.on("error", reject);
+      const chunks = [];
+      upstream.on("data", (chunk) => chunks.push(chunk));
+      upstream.on("end", () => resolve({ status: upstream.statusCode || 502, body: Buffer.concat(chunks).toString("utf8") }));
+      upstream.on("error", reject);
     });
   });
 }
