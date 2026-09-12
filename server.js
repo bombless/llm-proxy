@@ -13,6 +13,7 @@ const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, "config.json
 const RESPONSE_STATE_FILE = process.env.RESPONSE_STATE_FILE || path.join(__dirname, "responses-state.json");
 const METRICS_FILE = process.env.METRICS_FILE || path.join(__dirname, "llm-metrics.json");
 const USAGE_FILE = process.env.USAGE_FILE || path.join(__dirname, "llm-usage.json");
+const RESPONSE_SESSIONS_FILE = process.env.RESPONSE_SESSIONS_FILE || path.join(__dirname, "responses-sessions.json");
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -30,6 +31,14 @@ function saveResponseState() { saveJson(RESPONSE_STATE_FILE, responseState); }
 let metrics = {};
 try { metrics = JSON.parse(fs.readFileSync(METRICS_FILE, "utf8")); } catch {}
 function saveMetrics() { saveJson(METRICS_FILE, metrics); }
+let responseSessions = [];
+try { responseSessions = JSON.parse(fs.readFileSync(RESPONSE_SESSIONS_FILE, "utf8")); if (!Array.isArray(responseSessions)) responseSessions = []; } catch {}
+function saveResponseSessions() { saveJson(RESPONSE_SESSIONS_FILE, responseSessions.slice(-100)); }
+function createResponseSession(body, chatBody, entry) {
+  const session = { id: `session_${randomId()}`, at: new Date().toISOString(), model: body.model, upstream_model: chatBody.model, upstream_url: makeTargetUrl(entry, "responses", true).href, status: "in_progress", request: body, chat_request: chatBody };
+  responseSessions.push(session); responseSessions = responseSessions.slice(-100); saveResponseSessions(); return session;
+}
+function updateResponseSession(session, patch) { Object.assign(session, patch, { updated_at: new Date().toISOString() }); saveResponseSessions(); }
 function metricKey(type, entry) { return `${type}:${entry.id}`; }
 function recordMetric(type, entry, sample) {
   const key = metricKey(type, entry);
@@ -225,9 +234,9 @@ function chatAssistantMessageToHistory(message) {
 }
 function chatMessageToResponseOutput(message) {
   const content = message?.content;
-  const output = [{ id: `msg_${randomId()}`, type: "message", role: "assistant", status: "completed", content: [] }];
-  if (typeof content === "string" && content) output[0].content.push({ type: "output_text", text: content, annotations: [] });
-  else if (Array.isArray(content)) for (const part of content) if (part?.text) output[0].content.push({ type: "output_text", text: part.text, annotations: [] });
+  const textParts = typeof content === "string" ? (content ? [{ type: "output_text", text: content, annotations: [] }] : []) : Array.isArray(content) ? content.filter((part) => part?.text).map((part) => ({ type: "output_text", text: part.text, annotations: [] })) : [];
+  const output = [];
+  if (textParts.length) output.push({ id: `msg_${randomId()}`, type: "message", role: "assistant", status: "completed", content: textParts });
   if (message?.tool_calls?.length) for (const call of message.tool_calls) {
     const callId = call.id || `call_${randomId()}`;
     output.push({ id: `fc_${randomId()}`, type: "function_call", status: "completed", name: call.function?.name, arguments: call.function?.arguments || "", call_id: callId });
@@ -300,11 +309,16 @@ function sendUpstream(req, res, target, entry, body, onResponse, tracker = null)
 function safeModel(body) { try { return JSON.parse(body.toString("utf8")).model || ""; } catch { return ""; } }
 
 function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
+  console.log(`[responses request] ${req.method} ${req.originalUrl}`);
+  console.log(JSON.stringify(body, null, 2));
   let chatBody;
   let requestMessages;
   try { ({ chat: chatBody, requestMessages } = responseRequestToChat(body, responseState)); } catch (e) { return res.status(400).json({ error: { message: e.message, type: "invalid_request_error" } }); }
   chatBody.model = entry.upstream_model || body.model;
+  const session = createResponseSession(body, chatBody, entry);
   if (body.stream && (!chatBody.stream_options || chatBody.stream_options.include_usage === undefined)) chatBody.stream_options = { ...(chatBody.stream_options || {}), include_usage: true };
+  console.log(`[responses -> chat completions] ${req.method} ${entry.url}`);
+  console.log(JSON.stringify(chatBody, null, 2));
   let target;
   try { target = makeTargetUrl(entry, "responses", true); } catch (e) { return res.status(500).json({ error: { message: e.message, type: "proxy_config_error" } }); }
   const payload = Buffer.from(JSON.stringify(chatBody));
@@ -318,11 +332,11 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
         let usage = null; try { usage = JSON.parse(raw)?.usage || null; } catch {}
         recordUsage("responses", entry, tracker?.startedEpoch || Date.now(), upstream.statusCode || 502, usage);
         if ((upstream.statusCode || 500) >= 400) { let message = raw; try { message = JSON.parse(raw)?.error?.message || message; } catch {} return res.status(upstream.statusCode || 502).json({ error: { message, type: "upstream_error" } }); }
-        try { const data = JSON.parse(raw); const response = chatToResponse(data, body.model, responseState, body.previous_response_id, requestMessages); res.status(200).json(response); } catch (e) { res.status(502).json({ error: { message: e.message, type: "proxy_error" } }); }
+        try { const data = JSON.parse(raw); const response = chatToResponse(data, body.model, responseState, body.previous_response_id, requestMessages); updateResponseSession(session, { status: "completed", response_id: response.id, response }); res.status(200).json(response); } catch (e) { updateResponseSession(session, { status: "error", error: e.message }); res.status(502).json({ error: { message: e.message, type: "proxy_error" } }); }
       });
       return;
     }
-    if ((upstream.statusCode || 500) >= 400) { res.status(upstream.statusCode || 502); upstream.pipe(res); return; }
+    if ((upstream.statusCode || 500) >= 400) { updateResponseSession(session, { status: "error", upstream_status: upstream.statusCode }); res.status(upstream.statusCode || 502); upstream.pipe(res); return; }
     const responseId = `resp_${randomId()}`;
     const created = Math.floor(Date.now() / 1000);
     const previousMessages = body.previous_response_id && responseState[body.previous_response_id] && responseState[body.previous_response_id].messages ? responseState[body.previous_response_id].messages : [];
@@ -332,6 +346,7 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
     let finishReason = null;
     let streamUsage = null;
     const streamToolCalls = new Map();
+    let nextOutputIndex = 0;
     res.status(200); res.setHeader("content-type", "text/event-stream"); res.setHeader("cache-control", "no-cache"); res.setHeader("connection", "keep-alive");
     const emit = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
     emit("response.created", { type: "response.created", response: { id: responseId, object: "response", created_at: created, status: "in_progress", model: body.model, output: [], previous_response_id: body.previous_response_id || null } });
@@ -351,19 +366,29 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
         const deltaObject = choice?.delta || {};
         for (const call of deltaObject.tool_calls || []) {
           const index = call.index ?? 0;
-          const current = streamToolCalls.get(index) || { id: call.id || `call_${randomId()}`, name: "", arguments: "" };
+          const current = streamToolCalls.get(index) || { id: call.id || `call_${randomId()}`, itemId: `fc_${randomId()}`, outputIndex: nextOutputIndex++, name: "", arguments: "" };
+          if (!streamToolCalls.has(index)) {
+            streamToolCalls.set(index, current);
+            emit("response.output_item.added", { type: "response.output_item.added", output_index: current.outputIndex, item: { id: current.itemId, type: "function_call", status: "in_progress", name: call.function?.name || "", arguments: "", call_id: current.id } });
+          }
           if (call.id) current.id = call.id;
           if (call.function?.name) current.name += call.function.name;
-          if (call.function?.arguments) current.arguments += call.function.arguments;
+          if (call.function?.arguments) {
+            current.arguments += call.function.arguments;
+            emit("response.function_call_arguments.delta", { type: "response.function_call_arguments.delta", item_id: current.itemId, output_index: current.outputIndex, delta: call.function.arguments });
+          }
           streamToolCalls.set(index, current);
         }
         const delta = deltaObject.content;
-        if (delta) { if (!outputStarted) { outputStarted = true; emit("response.output_item.added", { type: "response.output_item.added", output_index: 0, item: { id: itemId, type: "message", role: "assistant", status: "in_progress", content: [] } }); } fullText += delta; emit("response.output_text.delta", { type: "response.output_text.delta", item_id: itemId, output_index: 0, content_index: 0, delta }); }
+        if (delta) { if (!outputStarted) { outputStarted = true; nextOutputIndex = Math.max(nextOutputIndex, 1); emit("response.output_item.added", { type: "response.output_item.added", output_index: 0, item: { id: itemId, type: "message", role: "assistant", status: "in_progress", content: [] } }); } fullText += delta; emit("response.output_text.delta", { type: "response.output_text.delta", item_id: itemId, output_index: 0, content_index: 0, delta }); }
       }
     });
     upstream.on("end", () => {
-      const toolOutputs = [...streamToolCalls.values()].map((call) => ({ id: `fc_${randomId()}`, type: "function_call", status: "completed", name: call.name, arguments: call.arguments, call_id: call.id }));
-      for (const item of toolOutputs) emit("response.output_item.done", { type: "response.output_item.done", output_index: 1, item });
+      const toolOutputs = [...streamToolCalls.values()].map((call) => ({ id: call.itemId, type: "function_call", status: "completed", name: call.name, arguments: call.arguments, call_id: call.id }));
+      for (const call of streamToolCalls.values()) {
+        emit("response.function_call_arguments.done", { type: "response.function_call_arguments.done", item_id: call.itemId, output_index: call.outputIndex, name: call.name, arguments: call.arguments });
+        emit("response.output_item.done", { type: "response.output_item.done", output_index: call.outputIndex, item: { id: call.itemId, type: "function_call", status: "completed", name: call.name, arguments: call.arguments, call_id: call.id } });
+      }
       const messages = [...previousMessages, ...requestMessages];
       if (outputStarted || fullText || toolOutputs.length) {
         const assistant = { role: "assistant", content: fullText };
@@ -371,8 +396,9 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
         messages.push(assistant);
       }
       responseState[responseId] = { messages, created_at: created }; saveResponseState();
-      if (outputStarted) emit("response.output_text.done", { type: "response.output_text.done", item_id: itemId, output_index: 0, content_index: 0, text: fullText });
       const completedStatus = finishReason === "length" ? "incomplete" : "completed";
+      updateResponseSession(session, { status: completedStatus, response_id: responseId, response: { id: responseId, output_text: fullText, usage: responseUsage(streamUsage) } });
+      if (outputStarted) emit("response.output_text.done", { type: "response.output_text.done", item_id: itemId, output_index: 0, content_index: 0, text: fullText });
       emit("response.completed", { type: "response.completed", response: { id: responseId, object: "response", created_at: created, status: completedStatus, model: body.model, output: [...(fullText || outputStarted ? [{ id: itemId, type: "message", role: "assistant", status: completedStatus, content: [{ type: "output_text", text: fullText, annotations: [] }] }] : []), ...toolOutputs], previous_response_id: body.previous_response_id || null, output_text: fullText, incomplete_details: finishReason === "length" ? { reason: "max_output_tokens" } : null, usage: responseUsage(streamUsage) } });
       if (tracker) tracker.finish(200);
       res.end();
@@ -464,6 +490,7 @@ app.get("/v1/models", (req, res) => {
 });
 app.get("/api/config", (req, res) => res.json(sanitizeConfig()));
 app.get("/api/usage", (req, res) => res.json(publicUsage()));
+app.get("/api/response-sessions", (req, res) => res.json(responseSessions.slice().reverse()));
 app.get("/api/metrics", (req, res) => { const result = {}; for (const type of ["chat_completions", "responses"]) result[type] = (config[type] || []).map((entry) => ({ id: entry.id, public_model: entry.public_model, upstream_model: entry.upstream_model || entry.public_model, samples: metrics[metricKey(type, entry)] || [] })); res.json(result); });
 app.put("/api/config", (req, res) => { const incoming = req.body || {}; for (const type of ["chat_completions", "responses"]) { if (!Array.isArray(incoming[type])) continue; config[type] = incoming[type].map((x) => ({ id: String(x.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`), public_model: String(x.public_model || "").trim(), url: String(x.url || "").trim(), key: x.key === "********" ? ((config[type] || []).find((old) => old.id === x.id)?.key || "") : String(x.key || ""), upstream_model: String(x.upstream_model || "").trim(), use_proxy: x.use_proxy !== false, proxy_from_chat_completions: type === "responses" ? x.proxy_from_chat_completions === true : false, cache_price: numberOrNull(x.cache_price) ?? 0, prefill_price: numberOrNull(x.prefill_price) ?? 0, generation_price: numberOrNull(x.generation_price) ?? 0, enabled: x.enabled !== false })).filter((x) => x.public_model && x.url); } saveConfig(config); res.json(sanitizeConfig()); });
 app.post("/api/test", async (req, res) => { const type = req.body?.type, id = req.body?.id; if (!["chat_completions", "responses"].includes(type) || !id) return res.status(400).json({ ok: false, error: "Invalid test request" }); const entry = (config[type] || []).find((x) => x.id === id); if (!entry) return res.status(404).json({ ok: false, error: "Upstream not found" }); try { const result = await performTest(entry, type); res.json({ ok: true, status: result.status, text: extractTestText(result.body, type), raw: result.body }); } catch (e) { res.status(502).json({ ok: false, error: e.message }); } });
