@@ -101,7 +101,7 @@ onUnmounted(() => window.removeEventListener('beforeunload', handleBeforeUnload)
     <ErrorStats v-show="activeTab === 'errors'" :configs="state" :types="types" />
     <ModelBenchmark v-show="activeTab === 'benchmark'" :configs="state" :saved-configs="savedState" :types="types" @notice="showNotice" />
   </main>
-  <button class="btn primary save-fab" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存配置' }}</button>
+  <button v-show="activeTab === 'proxy'" class="btn primary save-fab" :disabled="busy" @click="save">{{ busy ? '保存中…' : '保存配置' }}</button>
   <div v-if="notice" class="status">{{ notice }}</div>
 </template>
 
