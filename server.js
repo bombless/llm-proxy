@@ -59,7 +59,14 @@ function metricTracker(type, entry) {
     if (!data || typeof data !== "object") return;
     if (data.usage) usage = data.usage;
     const calls = data.choices?.[0]?.delta?.tool_calls || data.choices?.[0]?.message?.tool_calls || [];
-    if (calls.length) { calls.forEach((call) => toolCallIds.add(call.id || call.index || call.function?.name || JSON.stringify(call))); hadTool = true; }
+    if (calls.length) {
+      // Tool-call-only responses have no text content, but the tool-call
+      // arguments are still the model's first output. Record that moment so
+      // TTFT (首字时间) is shown instead of incorrectly remaining null/zero.
+      if (firstTextAt === null) firstTextAt = process.hrtime.bigint();
+      calls.forEach((call) => toolCallIds.add(call.id || call.index || call.function?.name || JSON.stringify(call)));
+      hadTool = true;
+    }
     const delta = typeof data.delta === "string" ? data.delta : (data.choices?.[0]?.delta?.content || data.choices?.[0]?.message?.content || data.output_text?.delta || "");
     if (!delta) return;
     if (firstTextAt === null) firstTextAt = process.hrtime.bigint();
@@ -349,6 +356,7 @@ function proxyRequest(req, res, type) {
   if (fromChat) return proxyResponsesThroughChat(req, res, entry, original, metricTracker(type, entry));
   let target;
   try { target = makeTargetUrl(entry, type); } catch (e) { return res.status(500).json({ error: { message: e.message, type: "proxy_config_error" } }); }
+  console.log('target', target)
   let body = getBodyBuffer(req);
   if (Object.keys(original).length) body = Buffer.from(JSON.stringify({ ...original, model: entry.upstream_model || publicModel }));
   sendUpstream(req, res, target, entry, body, null, metricTracker(type, entry));
@@ -356,6 +364,7 @@ function proxyRequest(req, res, type) {
 
 function shellQuote(value) { return `'${String(value).replace(/'/g, `'\\''`)}'`; }
 function logCurl(req, target, headers, body) {
+  console.log('target', target)
   if (!String(req.originalUrl || "").startsWith("/api/test")) return;
   const parts = [`curl -i -X ${shellQuote(req.method || "POST")}`, shellQuote(target.href)];
   for (const [key, value] of Object.entries(headers)) {
@@ -367,6 +376,7 @@ function logCurl(req, target, headers, body) {
   console.log(`[api/test curl] ${parts.join(" ")}`);
 }
 function sendUpstream(req, res, target, entry, body, onResponse, tracker = null, attempt = 0) {
+  console.log('sendUpstream', target)
   const headers = {};
   // Forward only HTTP semantics needed by the upstream API. Passing Codex's
   // compression/client fingerprint headers through has caused some compatible
