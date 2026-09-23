@@ -296,14 +296,16 @@ function responseRequestToChat(body, state) {
   return { chat, requestMessages: currentMessages, tools, responseTools: requestTools };
 }
 function responseUsage(usage) {
-  if (!usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0 };
+  if (!usage) return { input_tokens: 0, output_tokens: 0, total_tokens: 0, input_tokens_details: { cached_tokens: 0 } };
   const input = numberOrNull(usage.input_tokens ?? usage.prompt_tokens) ?? 0;
   const output = numberOrNull(usage.output_tokens ?? usage.completion_tokens) ?? 0;
+  const sourceDetails = usage.input_tokens_details || usage.prompt_tokens_details || {};
+  const cached = numberOrNull(sourceDetails.cached_tokens ?? usage.cache_read_input_tokens ?? usage.cached_tokens) ?? 0;
   return {
     input_tokens: input,
     output_tokens: output,
     total_tokens: numberOrNull(usage.total_tokens) ?? input + output,
-    ...(usage.input_tokens_details || usage.prompt_tokens_details ? { input_tokens_details: usage.input_tokens_details || usage.prompt_tokens_details } : {})
+    input_tokens_details: { ...sourceDetails, cached_tokens: cached }
   };
 }
 function chatAssistantMessageToHistory(message) {
