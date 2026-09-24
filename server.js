@@ -12,7 +12,7 @@ const LISTEN_PORT = Number(process.env.LISTEN_PORT || 8080);
 const SOCKS5_PROXY = process.env.SOCKS5_PROXY || "";
 const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, "config.json");
 const RESPONSE_STATE_FILE = process.env.RESPONSE_STATE_FILE || path.join(__dirname, "responses-state.json");
-const METRICS_FILE = process.env.METRICS_FILE || path.join(__dirname, "llm-metrics.json");
+const METRICS_FILE = process.env.METRICS_FILE || path.join(__dirname, "llm-metrics.json");`r`nconst METRICS_COUNT_FILE = process.env.METRICS_COUNT_FILE || path.join(__dirname, "llm-metrics-counts.json");
 const USAGE_FILE = process.env.USAGE_FILE || path.join(__dirname, "llm-usage.json");
 const RESPONSE_SESSIONS_FILE = process.env.RESPONSE_SESSIONS_FILE || path.join(__dirname, "responses-sessions.json");
 
@@ -30,8 +30,7 @@ let responseState = {};
 try { responseState = JSON.parse(fs.readFileSync(RESPONSE_STATE_FILE, "utf8")); } catch {}
 function saveResponseState() { saveJson(RESPONSE_STATE_FILE, responseState); }
 let metrics = {};
-try { metrics = JSON.parse(fs.readFileSync(METRICS_FILE, "utf8")); } catch {}
-function saveMetrics() { saveJson(METRICS_FILE, metrics); }
+try { metrics = JSON.parse(fs.readFileSync(METRICS_FILE, "utf8")); } catch {}`r`nlet metricCounts = {};`r`ntry { metricCounts = JSON.parse(fs.readFileSync(METRICS_COUNT_FILE, "utf8")); } catch {}`r`nfunction saveMetrics() { saveJson(METRICS_FILE, metrics); }`r`nfunction saveMetricCounts() { saveJson(METRICS_COUNT_FILE, metricCounts); }
 let responseSessions = [];
 try { responseSessions = JSON.parse(fs.readFileSync(RESPONSE_SESSIONS_FILE, "utf8")); if (!Array.isArray(responseSessions)) responseSessions = []; } catch {}
 function saveResponseSessions() { saveJson(RESPONSE_SESSIONS_FILE, responseSessions.slice(-100)); }
@@ -46,10 +45,8 @@ function updateResponseSession(session, patch) { Object.assign(session, patch, {
 function metricKey(type, entry) { return `${type}:${entry.id}`; }
 function recordMetric(type, entry, sample) {
   const key = metricKey(type, entry);
-  const history = Array.isArray(metrics[key]) ? metrics[key] : [];
-  history.push({ ...sample, at: new Date().toISOString(), model: entry.public_model });
-  metrics[key] = history.slice(-10);
-  saveMetrics();
+  const history = Array.isArray(metrics[key]) ? metrics[key] : [];`r`n  const knownCount = Number.isSafeInteger(metricCounts[key]) && metricCounts[key] >= 0 ? metricCounts[key] : history.length;`r`n  metricCounts[key] = knownCount + 1;`r`n  history.push({ ...sample, at: new Date().toISOString(), model: entry.public_model });
+  metrics[key] = history.slice(-10);`r`n  saveMetrics();`r`n  saveMetricCounts();
 }
 function metricTracker(type, entry) {
   const startedEpoch = Date.now();
@@ -635,7 +632,7 @@ app.get("/v1/models", (req, res) => {
 app.get("/api/config", (req, res) => res.json(sanitizeConfig()));
 app.get("/api/usage", (req, res) => res.json(publicUsage()));
 app.get("/api/response-sessions", (req, res) => res.json(responseSessions.slice().reverse()));
-app.get("/api/metrics", (req, res) => { const result = {}; for (const type of ["chat_completions", "responses"]) result[type] = (config[type] || []).map((entry) => ({ id: entry.id, public_model: entry.public_model, upstream_model: entry.upstream_model || entry.public_model, samples: metrics[metricKey(type, entry)] || [] })); res.json(result); });
+app.get("/api/metrics", (req, res) => { const result = {}; for (const type of ["chat_completions", "responses"]) result[type] = (config[type] || []).map((entry) => ({ id: entry.id, public_model: entry.public_model, upstream_model: entry.upstream_model || entry.public_model, count: Number.isSafeInteger(metricCounts[metricKey(type, entry)]) ? metricCounts[metricKey(type, entry)] : (metrics[metricKey(type, entry)] || []).length, count: Number.isSafeInteger(metricCounts[metricKey(type, entry)]) ? metricCounts[metricKey(type, entry)] : (metrics[metricKey(type, entry)] || []).length, samples: metrics[metricKey(type, entry)] || [] })); res.json(result); });
 app.put("/api/config", (req, res) => { const incoming = req.body || {}; for (const type of ["chat_completions", "responses"]) { if (!Array.isArray(incoming[type])) continue; config[type] = incoming[type].map((x) => ({ id: String(x.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`), public_model: String(x.public_model || "").trim(), url: String(x.url || "").trim(), key: x.key === "********" ? ((config[type] || []).find((old) => old.id === x.id)?.key || "") : String(x.key || ""), upstream_model: String(x.upstream_model || "").trim(), use_proxy: x.use_proxy !== false, proxy_from_chat_completions: type === "responses" ? x.proxy_from_chat_completions === true : false, cache_price: numberOrNull(x.cache_price) ?? 0, prefill_price: numberOrNull(x.prefill_price) ?? 0, generation_price: numberOrNull(x.generation_price) ?? 0, enabled: x.enabled !== false })).filter((x) => x.public_model && x.url); } saveConfig(config); res.json(sanitizeConfig()); });
 app.post("/api/test", async (req, res) => { const type = req.body?.type, id = req.body?.id; if (!["chat_completions", "responses"].includes(type) || !id) return res.status(400).json({ ok: false, error: "Invalid test request" }); const entry = (config[type] || []).find((x) => x.id === id); if (!entry) return res.status(404).json({ ok: false, error: "Upstream not found" }); try { const result = await performTest(entry, type); res.json({ ok: true, status: result.status, text: extractTestText(result.body, type), raw: result.body }); } catch (e) { res.status(502).json({ ok: false, error: e.message }); } });
 app.post("/api/test-all", async (req, res) => { try { const results = await runAllBenchmarks(); res.json({ ok: true, prompt: BENCHMARK_PROMPT, results }); } catch (e) { res.status(500).json({ ok: false, error: e.message }); } });
@@ -654,3 +651,5 @@ server.on("error", (err) => {
   );
   process.exit(1);
 });
+
+

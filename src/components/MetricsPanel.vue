@@ -14,7 +14,7 @@ const rows = computed(() => props.types.flatMap(type => (props.configs[type.key]
   type: type.key,
   title: type.title,
   config,
-  samples: metrics.value[type.key]?.find(x => x.id === config.id)?.samples || [],
+  samples: metrics.value[type.key]?.find(x => x.id === config.id)?.samples || [],`r`n  count: metrics.value[type.key]?.find(x => x.id === config.id)?.count || 0,
 })).filter(x => x.config.public_model)))
 
 function formatMs(value) {
@@ -75,7 +75,7 @@ onBeforeUnmount(() => window.clearInterval(timer))
           <span class="metric-type">{{ row.title }}</span>
           <span v-if="row.config.upstream_model && row.config.upstream_model !== row.config.public_model" class="hint">→ {{ row.config.upstream_model }}</span>
         </div>
-        <span class="metric-count">{{ row.samples.length }}/10 次</span>
+        <span class="metric-count">{{ row.samples.length }}/{{ row.count }} 次</span>
       </div>
 
       <div v-if="!row.samples.length" class="metric-empty">还没有统计数据。需要有一次正常的流式模型调用后才会出现。</div>
@@ -114,3 +114,4 @@ onBeforeUnmount(() => window.clearInterval(timer))
 .kind-tool_call_with_reply { color: #176b45; background: #e2f6eb; }
 .kind-reply { color: #315f9b; background: #e7f0ff; }
 </style>
+
