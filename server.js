@@ -283,7 +283,7 @@ function responseRequestToChat(body, state) {
   if (requestTools.length && !tools.length) console.error("[responses tools] conversion produced no tools", JSON.stringify(requestTools));
   console.log(`[responses tools] converted ${tools.length}: ${JSON.stringify(tools, null, 2)}`);
   const chat = { model: body.model, messages };
-  const allowed = ["temperature", "top_p", "stream", "stop", "presence_penalty", "frequency_penalty", "seed", "response_format", "logprobs", "top_logprobs", "n"];
+  const allowed = ["temperature", "top_p", "stream", "stop", "presence_penalty", "frequency_penalty", "seed", "response_format", "logprobs", "top_logprobs", "n", "reasoning_effort"];
   for (const key of allowed) if (body[key] !== undefined) chat[key] = body[key];
   if (body.max_output_tokens != null) chat.max_completion_tokens = body.max_output_tokens;
   if (body.max_tokens != null) chat.max_tokens = body.max_tokens;
