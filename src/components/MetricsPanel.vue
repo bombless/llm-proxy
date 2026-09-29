@@ -14,7 +14,8 @@ const rows = computed(() => props.types.flatMap(type => (props.configs[type.key]
   type: type.key,
   title: type.title,
   config,
-  samples: metrics.value[type.key]?.find(x => x.id === config.id)?.samples || [],`r`n  count: metrics.value[type.key]?.find(x => x.id === config.id)?.count || 0,
+  samples: metrics.value[type.key]?.find(x => x.id === config.id)?.samples || [],
+  count: metrics.value[type.key]?.find(x => x.id === config.id)?.count || 0,
 })).filter(x => x.config.public_model)))
 
 function formatMs(value) {

@@ -12,7 +12,8 @@ const LISTEN_PORT = Number(process.env.LISTEN_PORT || 8080);
 const SOCKS5_PROXY = process.env.SOCKS5_PROXY || "";
 const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, "config.json");
 const RESPONSE_STATE_FILE = process.env.RESPONSE_STATE_FILE || path.join(__dirname, "responses-state.json");
-const METRICS_FILE = process.env.METRICS_FILE || path.join(__dirname, "llm-metrics.json");`r`nconst METRICS_COUNT_FILE = process.env.METRICS_COUNT_FILE || path.join(__dirname, "llm-metrics-counts.json");
+const METRICS_FILE = process.env.METRICS_FILE || path.join(__dirname, "llm-metrics.json");
+const METRICS_COUNT_FILE = process.env.METRICS_COUNT_FILE || path.join(__dirname, "llm-metrics-counts.json");
 const USAGE_FILE = process.env.USAGE_FILE || path.join(__dirname, "llm-usage.json");
 const RESPONSE_SESSIONS_FILE = process.env.RESPONSE_SESSIONS_FILE || path.join(__dirname, "responses-sessions.json");
 
@@ -30,7 +31,11 @@ let responseState = {};
 try { responseState = JSON.parse(fs.readFileSync(RESPONSE_STATE_FILE, "utf8")); } catch {}
 function saveResponseState() { saveJson(RESPONSE_STATE_FILE, responseState); }
 let metrics = {};
-try { metrics = JSON.parse(fs.readFileSync(METRICS_FILE, "utf8")); } catch {}`r`nlet metricCounts = {};`r`ntry { metricCounts = JSON.parse(fs.readFileSync(METRICS_COUNT_FILE, "utf8")); } catch {}`r`nfunction saveMetrics() { saveJson(METRICS_FILE, metrics); }`r`nfunction saveMetricCounts() { saveJson(METRICS_COUNT_FILE, metricCounts); }
+try { metrics = JSON.parse(fs.readFileSync(METRICS_FILE, "utf8")); } catch {}
+let metricCounts = {};
+try { metricCounts = JSON.parse(fs.readFileSync(METRICS_COUNT_FILE, "utf8")); } catch {}
+function saveMetrics() { saveJson(METRICS_FILE, metrics); }
+function saveMetricCounts() { saveJson(METRICS_COUNT_FILE, metricCounts); }
 let responseSessions = [];
 try { responseSessions = JSON.parse(fs.readFileSync(RESPONSE_SESSIONS_FILE, "utf8")); if (!Array.isArray(responseSessions)) responseSessions = []; } catch {}
 function saveResponseSessions() { saveJson(RESPONSE_SESSIONS_FILE, responseSessions.slice(-100)); }
@@ -45,8 +50,13 @@ function updateResponseSession(session, patch) { Object.assign(session, patch, {
 function metricKey(type, entry) { return `${type}:${entry.id}`; }
 function recordMetric(type, entry, sample) {
   const key = metricKey(type, entry);
-  const history = Array.isArray(metrics[key]) ? metrics[key] : [];`r`n  const knownCount = Number.isSafeInteger(metricCounts[key]) && metricCounts[key] >= 0 ? metricCounts[key] : history.length;`r`n  metricCounts[key] = knownCount + 1;`r`n  history.push({ ...sample, at: new Date().toISOString(), model: entry.public_model });
-  metrics[key] = history.slice(-10);`r`n  saveMetrics();`r`n  saveMetricCounts();
+  const history = Array.isArray(metrics[key]) ? metrics[key] : [];
+  const knownCount = Number.isSafeInteger(metricCounts[key]) && metricCounts[key] >= 0 ? metricCounts[key] : history.length;
+  metricCounts[key] = knownCount + 1;
+  history.push({ ...sample, at: new Date().toISOString(), model: entry.public_model });
+  metrics[key] = history.slice(-10);
+  saveMetrics();
+  saveMetricCounts();
 }
 function metricTracker(type, entry) {
   const startedEpoch = Date.now();
