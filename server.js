@@ -27,26 +27,184 @@ function saveJson(file, value) { const tmp = `${file}.tmp`; fs.writeFileSync(tmp
 function saveConfig(config) { saveJson(CONFIG_FILE, config); }
 let config = loadConfig();
 if (!fs.existsSync(CONFIG_FILE)) saveConfig(config);
-let responseState = {};
-try { responseState = JSON.parse(fs.readFileSync(RESPONSE_STATE_FILE, "utf8")); } catch {}
-function saveResponseState() { saveJson(RESPONSE_STATE_FILE, responseState); }
+const RESPONSE_SESSION_LIMIT = Number(process.env.RESPONSE_SESSION_LIMIT || 100);
+const RESPONSE_SESSION_PREVIEW_CHARS = Number(process.env.RESPONSE_SESSION_PREVIEW_CHARS || 2000);
+const DEBUG_PROXY = process.env.DEBUG_PROXY === "1";
+
+function compactSessionValue(value) {
+  if (value === null || value === undefined) return value;
+  if (value?._truncated === true) return { ...value, _preview: String(value._preview || "").slice(0, RESPONSE_SESSION_PREVIEW_CHARS) };
+  let raw;
+  try { raw = JSON.stringify(value, null, 2); } catch { return { _truncated: true, _original_chars: null, _preview: "[unserializable]" }; }
+  if (raw.length <= RESPONSE_SESSION_PREVIEW_CHARS) return value;
+  return { _truncated: true, _original_chars: raw.length, _preview: raw.slice(0, RESPONSE_SESSION_PREVIEW_CHARS) };
+}
+
+function compactTurn(turn) {
+  if (!turn || typeof turn !== "object") return turn;
+  return { ...turn, request: compactSessionValue(turn.request), chat_request: compactSessionValue(turn.chat_request), response: compactSessionValue(turn.response) };
+}
+
+function emptyResponseStore() { return { version: 2, sessions: {}, responses: {} }; }
+let responseStore = emptyResponseStore();
+try {
+  const raw = JSON.parse(fs.readFileSync(RESPONSE_STATE_FILE, "utf8"));
+  if (raw?.version === 2 && raw.sessions && raw.responses) responseStore = raw;
+} catch {}
+
+function saveResponseState() { saveJson(RESPONSE_STATE_FILE, responseStore); }
+function responseRecord(id) { return id ? responseStore.responses[id] || null : null; }
+function findSessionByResponseId(id) {
+  const record = responseRecord(id);
+  return record?.session_id ? responseStore.sessions[record.session_id] || null : null;
+}
+function responseHistory(state, id) {
+  const store = state || responseStore;
+  const chain = [], seen = new Set();
+  let currentId = id;
+  while (currentId) {
+    if (seen.has(currentId)) throw new Error("Circular previous_response_id: " + currentId);
+    seen.add(currentId);
+    const current = store.responses[currentId];
+    if (!current) throw new Error("Unknown previous_response_id: " + currentId);
+    chain.push(current);
+    currentId = current.previous_response_id || null;
+  }
+  chain.reverse();
+  const messages = [];
+  let tools = [];
+  for (const item of chain) {
+    messages.push(...(Array.isArray(item.messages) ? item.messages : []));
+    if (Array.isArray(item.tools) && item.tools.length) tools = item.tools;
+  }
+  return { messages, tools, chain };
+}
+function trimResponseSessions() {
+  const sessions = Object.values(responseStore.sessions).sort((a,b) => new Date(a.updated_at || a.created_at || 0) - new Date(b.updated_at || b.created_at || 0));
+  while (sessions.length > RESPONSE_SESSION_LIMIT) {
+    const removed = sessions.shift();
+    if (!removed) break;
+    delete responseStore.sessions[removed.id];
+    for (const turn of removed.turns || []) if (turn.response_id) delete responseStore.responses[turn.response_id];
+  }
+}
+function migrateLegacyResponseStore() {
+  if (Object.keys(responseStore.sessions).length || Object.keys(responseStore.responses).length) return false;
+  let legacyState = {};
+  let legacySessions = [];
+  try { legacyState = JSON.parse(fs.readFileSync(RESPONSE_STATE_FILE, "utf8")); } catch {}
+  try { legacySessions = JSON.parse(fs.readFileSync(RESPONSE_SESSIONS_FILE, "utf8")); } catch {}
+  if (!legacyState || legacyState.version === 2 || !legacySessions?.length) return false;
+
+  const sessionMap = new Map();
+  for (const old of legacySessions) {
+    const conversationId = old.conversation_id || ("conversation_" + randomId());
+    let session = sessionMap.get(conversationId);
+    if (!session) {
+      session = {
+        id: old.id || ("session_" + randomId()),
+        conversation_id: conversationId,
+        created_at: old.at || new Date().toISOString(),
+        updated_at: old.updated_at || old.at || new Date().toISOString(),
+        model: old.model,
+        upstream_model: old.upstream_model,
+        upstream_url: old.upstream_url,
+        turns: []
+      };
+      sessionMap.set(conversationId, session);
+      responseStore.sessions[session.id] = session;
+    }
+    const turn = {
+      id: "turn_" + randomId(),
+      turn: Number(old.turn) || session.turns.length + 1,
+      at: old.at || new Date().toISOString(),
+      updated_at: old.updated_at,
+      status: old.status || "completed",
+      request: old.request,
+      chat_request: old.chat_request,
+      response_id: old.response_id || null,
+      response: old.response || null,
+      error: old.error,
+      upstream_status: old.upstream_status
+    };
+    session.turns.push(turn);
+    session.updated_at = turn.updated_at || turn.at;
+  }
+
+  for (const old of legacySessions) {
+    if (!old.response_id || !legacyState[old.response_id]) continue;
+    const session = sessionMap.get(old.conversation_id);
+    const turn = session?.turns?.find((item) => item.response_id === old.response_id);
+    const source = legacyState[old.response_id];
+    responseStore.responses[old.response_id] = {
+      ...source,
+      id: old.response_id,
+      session_id: session?.id || null,
+      turn: turn?.id || null,
+      previous_response_id: source.previous_response_id || null
+    };
+  }
+
+  trimResponseSessions();
+  saveResponseState();
+  return true;
+}
+
+migrateLegacyResponseStore();
+
 let metrics = {};
 try { metrics = JSON.parse(fs.readFileSync(METRICS_FILE, "utf8")); } catch {}
 let metricCounts = {};
 try { metricCounts = JSON.parse(fs.readFileSync(METRICS_COUNT_FILE, "utf8")); } catch {}
 function saveMetrics() { saveJson(METRICS_FILE, metrics); }
 function saveMetricCounts() { saveJson(METRICS_COUNT_FILE, metricCounts); }
-let responseSessions = [];
-try { responseSessions = JSON.parse(fs.readFileSync(RESPONSE_SESSIONS_FILE, "utf8")); if (!Array.isArray(responseSessions)) responseSessions = []; } catch {}
-function saveResponseSessions() { saveJson(RESPONSE_SESSIONS_FILE, responseSessions.slice(-100)); }
+let responseSessionsRevision = 1;
 function createResponseSession(body, chatBody, entry) {
-  const previousSession = body.previous_response_id && responseSessions.find((item) => item.response_id === body.previous_response_id);
-  const conversationId = previousSession?.conversation_id || `conversation_${randomId()}`;
-  const turn = responseSessions.filter((item) => item.conversation_id === conversationId).length + 1;
-  const session = { id: `session_${randomId()}`, conversation_id: conversationId, turn, at: new Date().toISOString(), model: body.model, upstream_model: chatBody.model, upstream_url: makeTargetUrl(entry, "responses", true).href, status: "in_progress", request: body, chat_request: chatBody };
-  responseSessions.push(session); responseSessions = responseSessions.slice(-100); saveResponseSessions(); return session;
+  const previous = responseRecord(body.previous_response_id);
+  const previousSession = previous ? responseStore.sessions[previous.session_id] : null;
+  const now = new Date().toISOString();
+  const session = previousSession || {
+    id: "session_" + randomId(),
+    conversation_id: "conversation_" + randomId(),
+    created_at: now,
+    updated_at: now,
+    model: body.model,
+    upstream_model: chatBody.model,
+    upstream_url: makeTargetUrl(entry, "responses", true).href,
+    turns: []
+  };
+  if (!previousSession) responseStore.sessions[session.id] = session;
+  const turn = {
+    id: "turn_" + randomId(),
+    turn: session.turns.length + 1,
+    at: now,
+    status: "in_progress",
+    request: body,
+    chat_request: chatBody,
+    response_id: null,
+    response: null
+  };
+  session.turns.push(turn);
+  session.updated_at = now;
+  trimResponseSessions();
+  responseSessionsRevision += 1;
+  return { session, turn };
 }
-function updateResponseSession(session, patch) { Object.assign(session, patch, { updated_at: new Date().toISOString() }); saveResponseSessions(); }
+function updateResponseSession(session, turn, patch) {
+  Object.assign(turn, patch);
+  session.updated_at = new Date().toISOString();
+  trimResponseSessions();
+  responseSessionsRevision += 1;
+  saveResponseState();
+}
+function saveResponseRecord(id, record) {
+  responseStore.responses[id] = { ...record, id, session_id: record.session_id, turn: record.turn, previous_response_id: record.previous_response_id || null };
+  const session = responseStore.sessions[record.session_id];
+  const turn = session?.turns?.find((item) => item.id === record.turn);
+  if (turn) turn.response_id = id;
+  responseSessionsRevision += 1;
+  saveResponseState();
+}
 function metricKey(type, entry) { return `${type}:${entry.id}`; }
 function recordMetric(type, entry, sample) {
   const key = metricKey(type, entry);
@@ -276,8 +434,7 @@ function responseRequestToChat(body, state) {
   let messages = [...currentMessages];
   let previousTools = [];
   if (body.previous_response_id) {
-    const previous = state[body.previous_response_id];
-    if (!previous) throw new Error(`Unknown previous_response_id: ${body.previous_response_id}`);
+    const previous = responseHistory(state, body.previous_response_id);
     messages = [...previous.messages, ...currentMessages];
     previousTools = previous.tools || [];
   }
@@ -345,15 +502,15 @@ function chatMessageToResponseOutput(message, tools = []) {
   return output;
 }
 function randomId() { return Math.random().toString(36).slice(2) + Date.now().toString(36); }
-function chatToResponse(data, publicModel, state, previousId, requestMessages = [], requestTools = [], responseTools = []) {
+function chatToResponse(data, publicModel, state, previousId, requestMessages = [], requestTools = [], responseTools = [], session = null, turn = null) {
   const id = `resp_${randomId()}`;
   const message = data.choices?.[0]?.message || { role: "assistant", content: "" };
   const output = chatMessageToResponseOutput(message, responseTools);
   const assistantMessages = [chatAssistantMessageToHistory(message)];
-  state[id] = { messages: [...(previousId && state[previousId] ? state[previousId].messages : []), ...requestMessages, ...assistantMessages], tools: requestTools, created_at: Math.floor(Date.now() / 1000) };
-  saveResponseState();
+  const created_at = Math.floor(Date.now() / 1000);
+  if (session && turn) saveResponseRecord(id, { session_id: session.id, turn: turn.id, previous_response_id: previousId || null, messages: [...requestMessages, ...assistantMessages], tools: requestTools, created_at });
   const text = output.flatMap((x) => x.content || []).filter((x) => x.type === "output_text").map((x) => x.text).join("");
-  return { id, object: "response", created_at: state[id].created_at, status: "completed", error: null, incomplete_details: null, instructions: null, max_output_tokens: null, model: publicModel, output, parallel_tool_calls: true, previous_response_id: previousId || null, reasoning: { effort: null, summary: null }, service_tier: null, store: true, temperature: data.temperature ?? null, text: { format: { type: "text" } }, tool_choice: data.tool_choice || "auto", tools: responseToolsForResponse(responseTools), top_p: data.top_p ?? null, truncation: "disabled", usage: responseUsage(data.usage), metadata: {}, output_text: text };
+  return { id, object: "response", created_at, status: "completed", error: null, incomplete_details: null, instructions: null, max_output_tokens: null, model: publicModel, output, parallel_tool_calls: true, previous_response_id: previousId || null, reasoning: { effort: null, summary: null }, service_tier: null, store: true, temperature: data.temperature ?? null, text: { format: { type: "text" } }, tool_choice: data.tool_choice || "auto", tools: responseToolsForResponse(responseTools), top_p: data.top_p ?? null, truncation: "disabled", usage: responseUsage(data.usage), metadata: {}, output_text: text };
 }
 
 function proxyRequest(req, res, type) {
@@ -438,17 +595,17 @@ function safeModel(body) { try { return JSON.parse(body.toString("utf8")).model 
 
 function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
   console.log(`[responses request] ${req.method} ${req.originalUrl}`);
-  console.log(JSON.stringify(body, null, 2));
+  if (DEBUG_PROXY) console.log(JSON.stringify(body, null, 2));
   let chatBody;
   let requestMessages;
   let requestTools;
   let responseTools;
-  try { ({ chat: chatBody, requestMessages, tools: requestTools, responseTools } = responseRequestToChat(body, responseState)); } catch (e) { return res.status(400).json({ error: { message: e.message, type: "invalid_request_error" } }); }
+  try { ({ chat: chatBody, requestMessages, tools: requestTools, responseTools } = responseRequestToChat(body, responseStore)); } catch (e) { return res.status(400).json({ error: { message: e.message, type: "invalid_request_error" } }); }
   chatBody.model = entry.upstream_model || body.model;
-  const session = createResponseSession(body, chatBody, entry);
+  const { session, turn } = createResponseSession(body, chatBody, entry);
   if (body.stream && (!chatBody.stream_options || chatBody.stream_options.include_usage === undefined)) chatBody.stream_options = { ...(chatBody.stream_options || {}), include_usage: true };
   console.log(`[responses -> chat completions] ${req.method} ${entry.url}`);
-  console.log(JSON.stringify(chatBody, null, 2));
+  if (DEBUG_PROXY) console.log(JSON.stringify(chatBody, null, 2));
   let target;
   try { target = makeTargetUrl(entry, "responses", true); } catch (e) { return res.status(500).json({ error: { message: e.message, type: "proxy_config_error" } }); }
   const payload = Buffer.from(JSON.stringify(chatBody));
@@ -462,14 +619,14 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
         let usage = null; let parsed = null; try { parsed = JSON.parse(raw); usage = parsed?.usage || null; tracker?.consumeJson?.(parsed); } catch {}
         if (tracker) tracker.finish(upstream.statusCode || 502); else recordUsage("responses", entry, Date.now(), upstream.statusCode || 502, usage);
         if ((upstream.statusCode || 500) >= 400) { let message = raw; try { message = JSON.parse(raw)?.error?.message || message; } catch {} return res.status(upstream.statusCode || 502).json({ error: { message, type: "upstream_error" } }); }
-        try { const data = JSON.parse(raw); const response = chatToResponse(data, body.model, responseState, body.previous_response_id, requestMessages, requestTools, responseTools); updateResponseSession(session, { status: "completed", response_id: response.id, response }); res.status(200).json(response); } catch (e) { updateResponseSession(session, { status: "error", error: e.message }); res.status(502).json({ error: { message: e.message, type: "proxy_error" } }); }
+        try { const data = JSON.parse(raw); const response = chatToResponse(data, body.model, responseStore, body.previous_response_id, requestMessages, requestTools, responseTools, session, turn); updateResponseSession(session, turn, { status: "completed", response_id: response.id, response }); res.status(200).json(response); } catch (e) { updateResponseSession(session, turn, { status: "error", error: e.message }); res.status(502).json({ error: { message: e.message, type: "proxy_error" } }); }
       });
       return;
     }
-    if ((upstream.statusCode || 500) >= 400) { updateResponseSession(session, { status: "error", upstream_status: upstream.statusCode }); res.status(upstream.statusCode || 502); upstream.pipe(res); return; }
+    if ((upstream.statusCode || 500) >= 400) { updateResponseSession(session, turn, { status: "error", upstream_status: upstream.statusCode }); res.status(upstream.statusCode || 502); upstream.pipe(res); return; }
     const responseId = `resp_${randomId()}`;
     const created = Math.floor(Date.now() / 1000);
-    const previousMessages = body.previous_response_id && responseState[body.previous_response_id] && responseState[body.previous_response_id].messages ? responseState[body.previous_response_id].messages : [];
+    const previousMessages = body.previous_response_id ? responseHistory(responseStore, body.previous_response_id).messages : [];
     const itemId = `msg_${randomId()}`;
     let fullText = "";
     let outputStarted = false;
@@ -526,7 +683,7 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
     upstream.on("end", () => {
       let toolOutputs;
       try { toolOutputs = [...streamToolCalls.values()].map((call) => responseCallItem(call, responseTools)); }
-      catch (e) { updateResponseSession(session, { status: "error", error: e.message }); emit("error", { type: "error", message: e.message }); res.end(); return; }
+      catch (e) { updateResponseSession(session, turn, { status: "error", error: e.message }); emit("error", { type: "error", message: e.message }); res.end(); return; }
       for (const [index, call] of [...streamToolCalls.values()].entries()) {
         const item = toolOutputs[index];
         if (item.type === "custom_tool_call") {
@@ -541,9 +698,9 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
         if (streamToolCalls.size) assistant.tool_calls = [...streamToolCalls.values()].map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: call.arguments } }));
         messages.push(assistant);
       }
-      responseState[responseId] = { messages, tools: requestTools, created_at: created }; saveResponseState();
+      saveResponseRecord(responseId, { session_id: session.id, turn: turn.id, previous_response_id: body.previous_response_id || null, messages: [...requestMessages, ...messages.slice(previousMessages.length)], tools: requestTools, created_at: created });
       const completedStatus = finishReason === "length" ? "incomplete" : "completed";
-      updateResponseSession(session, { status: completedStatus, response_id: responseId, response: { id: responseId, output_text: fullText, usage: responseUsage(streamUsage) } });
+      updateResponseSession(session, turn, { status: completedStatus, response_id: responseId, response: { id: responseId, output_text: fullText, usage: responseUsage(streamUsage) } });
       if (outputStarted) {
         const part = { type: "output_text", text: fullText, annotations: [] };
         emit("response.output_text.done", { type: "response.output_text.done", item_id: itemId, output_index: textOutputIndex, content_index: 0, text: fullText });
@@ -589,7 +746,7 @@ function performTest(entry, type) {
   let target;
   try {
     if (fromChat) {
-      body = responseRequestToChat(originalBody, responseState).chat;
+      body = responseRequestToChat(originalBody, responseStore).chat;
       body.model = entry.upstream_model || originalBody.model;
       target = makeTargetUrl(entry, "responses", true);
     } else target = makeTargetUrl(entry, type);
@@ -641,7 +798,17 @@ app.get("/v1/models", (req, res) => {
 });
 app.get("/api/config", (req, res) => res.json(sanitizeConfig()));
 app.get("/api/usage", (req, res) => res.json(publicUsage()));
-app.get("/api/response-sessions", (req, res) => res.json(responseSessions.slice().reverse()));
+app.get("/api/response-sessions", (req, res) => {
+  const etag = 'W/"response-sessions-' + responseSessionsRevision + '"';
+  res.setHeader("ETag", etag);
+  res.setHeader("Cache-Control", "private, no-cache");
+  if (req.headers["if-none-match"] === etag) return res.status(304).end();
+  const sessions = Object.values(responseStore.sessions)
+    .sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))
+    .slice(0, RESPONSE_SESSION_LIMIT)
+    .map((session) => ({ ...session, turns: (session.turns || []).map(compactTurn) }));
+  res.json(sessions);
+});
 app.get("/api/metrics", (req, res) => { const result = {}; for (const type of ["chat_completions", "responses"]) result[type] = (config[type] || []).map((entry) => ({ id: entry.id, public_model: entry.public_model, upstream_model: entry.upstream_model || entry.public_model, count: Number.isSafeInteger(metricCounts[metricKey(type, entry)]) ? metricCounts[metricKey(type, entry)] : (metrics[metricKey(type, entry)] || []).length, count: Number.isSafeInteger(metricCounts[metricKey(type, entry)]) ? metricCounts[metricKey(type, entry)] : (metrics[metricKey(type, entry)] || []).length, samples: metrics[metricKey(type, entry)] || [] })); res.json(result); });
 app.put("/api/config", (req, res) => { const incoming = req.body || {}; for (const type of ["chat_completions", "responses"]) { if (!Array.isArray(incoming[type])) continue; config[type] = incoming[type].map((x) => ({ id: String(x.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`), public_model: String(x.public_model || "").trim(), url: String(x.url || "").trim(), key: x.key === "********" ? ((config[type] || []).find((old) => old.id === x.id)?.key || "") : String(x.key || ""), upstream_model: String(x.upstream_model || "").trim(), use_proxy: x.use_proxy !== false, proxy_from_chat_completions: type === "responses" ? x.proxy_from_chat_completions === true : false, cache_price: numberOrNull(x.cache_price) ?? 0, prefill_price: numberOrNull(x.prefill_price) ?? 0, generation_price: numberOrNull(x.generation_price) ?? 0, enabled: x.enabled !== false })).filter((x) => x.public_model && x.url); } saveConfig(config); res.json(sanitizeConfig()); });
 app.post("/api/test", async (req, res) => { const type = req.body?.type, id = req.body?.id; if (!["chat_completions", "responses"].includes(type) || !id) return res.status(400).json({ ok: false, error: "Invalid test request" }); const entry = (config[type] || []).find((x) => x.id === id); if (!entry) return res.status(404).json({ ok: false, error: "Upstream not found" }); try { const result = await performTest(entry, type); res.json({ ok: true, status: result.status, text: extractTestText(result.body, type), raw: result.body }); } catch (e) { res.status(502).json({ ok: false, error: e.message }); } });

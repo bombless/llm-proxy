@@ -1,13 +1,13 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-const sessions = ref([]), selectedConversation = ref(null), selectedSession = ref(null), loading = ref(false)
+const sessions = ref([]), selectedConversation = ref(null), selectedSession = ref(null), loading = ref(false); let responseSessionsEtag = ''
 let timer
-const conversations = computed(() => { const groups = new Map(); for (const item of sessions.value) { if (!groups.has(item.conversation_id)) groups.set(item.conversation_id, []); groups.get(item.conversation_id).push(item) }; return [...groups.values()].map(items => ({ id: items[0].conversation_id, model: items[0].model, items: items.sort((a, b) => new Date(a.at) - new Date(b.at)) })).reverse() })
+const conversations = computed(() => sessions.value.map(session => ({ id: session.id, conversation_id: session.conversation_id, model: session.model, items: (session.turns || []).slice().sort((a, b) => Number(a.turn || 0) - Number(b.turn || 0)) })))
 const conversation = computed(() => conversations.value.find(x => x.id === selectedConversation.value) || conversations.value[0])
 const current = computed(() => conversation.value?.items.find(x => x.id === selectedSession.value) || conversation.value?.items.at(-1))
 function formatTime(value) { return value ? new Date(value).toLocaleString('zh-CN') : '—' }
-async function load() { loading.value = true; try { const r = await fetch('/api/response-sessions', { cache: 'no-store' }); if (r.ok) { sessions.value = await r.json(); if (!selectedConversation.value && conversations.value[0]) selectedConversation.value = conversations.value[0].id; if (!selectedSession.value && conversation.value?.items[0]) selectedSession.value = conversation.value.items[0].id } } finally { loading.value = false } }
-onMounted(() => { load(); timer = setInterval(load, 2000) })
+async function load() { loading.value = true; try { const r = await fetch('/api/response-sessions', { cache: 'no-store', headers: responseSessionsEtag ? { 'If-None-Match': responseSessionsEtag } : {} }); if (r.status === 304) return; if (r.ok) { responseSessionsEtag = r.headers.get('ETag') || responseSessionsEtag; sessions.value = await r.json(); if (!selectedConversation.value && conversations.value[0]) selectedConversation.value = conversations.value[0].id; if (!selectedSession.value && conversation.value?.items[0]) selectedSession.value = conversation.value.items[0].id } } finally { loading.value = false } }
+onMounted(() => { load(); timer = setInterval(load, 5000) })
 onBeforeUnmount(() => clearInterval(timer))
 </script>
 <template>
