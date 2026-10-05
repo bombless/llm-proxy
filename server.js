@@ -299,7 +299,11 @@ function publicUsage() {
   return { summary, recent: usageDb.exec("SELECT * FROM calls ORDER BY at DESC LIMIT 200") };
 }
 
-function upstreamFor(type, publicModel) { return (config[type] || []).find((x) => x.public_model === publicModel && x.enabled !== false); }
+// `hidden` is separate from `enabled`: hidden entries remain configurable and
+// testable, but are not exposed through the public API. This allows multiple
+// entries to share one public model name while only one is active at a time.
+function isPublicEntry(entry) { return entry && entry.enabled !== false && entry.hidden !== true && entry.public_model; }
+function upstreamFor(type, publicModel) { return (config[type] || []).find((x) => x.public_model === publicModel && isPublicEntry(x)); }
 function sanitizeConfig() { return { chat_completions: (config.chat_completions || []).map((x) => ({ ...x, key: x.key ? "********" : "" })), responses: (config.responses || []).map((x) => ({ ...x, key: x.key ? "********" : "" })) }; }
 function getBodyObject(req) { if (req.body && typeof req.body === "object" && !Buffer.isBuffer(req.body)) return req.body; try { return JSON.parse(Buffer.isBuffer(req.body) ? req.body.toString("utf8") : "{}"); } catch { return {}; } }
 function getBodyBuffer(req) { if (Buffer.isBuffer(req.body)) return req.body; if (req.body && typeof req.body === "object") return Buffer.from(JSON.stringify(req.body)); return Buffer.alloc(0); }
@@ -774,7 +778,7 @@ app.all("/v1/chat/completions", (req, res) => proxyRequest(req, res, "chat_compl
 app.all("/v1/responses", (req, res) => proxyRequest(req, res, "responses"));
 app.get("/v1/models", (req, res) => {
   const models = new Map();
-  for (const type of ["chat_completions", "responses"]) for (const entry of (config[type] || [])) if (entry.enabled !== false && entry.public_model && !models.has(entry.public_model)) models.set(entry.public_model, { id: entry.public_model, object: "model", created: Number(entry.created) || 0, owned_by: entry.owned_by || "llm-proxy" });
+  for (const type of ["chat_completions", "responses"]) for (const entry of (config[type] || [])) if (isPublicEntry(entry) && !models.has(entry.public_model)) models.set(entry.public_model, { id: entry.public_model, object: "model", created: Number(entry.created) || 0, owned_by: entry.owned_by || "llm-proxy" });
   res.json({ object: "list", data: [...models.values()] });
 });
 app.get("/api/config", (req, res) => res.json(sanitizeConfig()));
@@ -791,7 +795,7 @@ app.get("/api/response-sessions", (req, res) => {
   res.json(sessions);
 });
 app.get("/api/metrics", (req, res) => { const result = {}; for (const type of ["chat_completions", "responses"]) result[type] = (config[type] || []).map((entry) => ({ id: entry.id, public_model: entry.public_model, upstream_model: entry.upstream_model || entry.public_model, count: Number.isSafeInteger(metricCounts[metricKey(type, entry)]) ? metricCounts[metricKey(type, entry)] : (metrics[metricKey(type, entry)] || []).length, count: Number.isSafeInteger(metricCounts[metricKey(type, entry)]) ? metricCounts[metricKey(type, entry)] : (metrics[metricKey(type, entry)] || []).length, samples: metrics[metricKey(type, entry)] || [] })); res.json(result); });
-app.put("/api/config", (req, res) => { const incoming = req.body || {}; for (const type of ["chat_completions", "responses"]) { if (!Array.isArray(incoming[type])) continue; config[type] = incoming[type].map((x) => ({ id: String(x.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`), public_model: String(x.public_model || "").trim(), url: String(x.url || "").trim(), key: x.key === "********" ? ((config[type] || []).find((old) => old.id === x.id)?.key || "") : String(x.key || ""), upstream_model: String(x.upstream_model || "").trim(), use_proxy: x.use_proxy !== false, proxy_from_chat_completions: type === "responses" ? x.proxy_from_chat_completions === true : false, cache_price: numberOrNull(x.cache_price) ?? 0, prefill_price: numberOrNull(x.prefill_price) ?? 0, generation_price: numberOrNull(x.generation_price) ?? 0, enabled: x.enabled !== false })).filter((x) => x.public_model && x.url); } saveConfig(config); res.json(sanitizeConfig()); });
+app.put("/api/config", (req, res) => { const incoming = req.body || {}; for (const type of ["chat_completions", "responses"]) { if (!Array.isArray(incoming[type])) continue; config[type] = incoming[type].map((x) => ({ id: String(x.id || `${Date.now()}-${Math.random().toString(36).slice(2)}`), public_model: String(x.public_model || "").trim(), url: String(x.url || "").trim(), key: x.key === "********" ? ((config[type] || []).find((old) => old.id === x.id)?.key || "") : String(x.key || ""), upstream_model: String(x.upstream_model || "").trim(), use_proxy: x.use_proxy !== false, proxy_from_chat_completions: type === "responses" ? x.proxy_from_chat_completions === true : false, cache_price: numberOrNull(x.cache_price) ?? 0, prefill_price: numberOrNull(x.prefill_price) ?? 0, generation_price: numberOrNull(x.generation_price) ?? 0, enabled: x.enabled !== false, hidden: x.hidden === true })).filter((x) => x.public_model && x.url); } saveConfig(config); res.json(sanitizeConfig()); });
 app.post("/api/test", async (req, res) => { const type = req.body?.type, id = req.body?.id; if (!["chat_completions", "responses"].includes(type) || !id) return res.status(400).json({ ok: false, error: "Invalid test request" }); const entry = (config[type] || []).find((x) => x.id === id); if (!entry) return res.status(404).json({ ok: false, error: "Upstream not found" }); try { const result = await performTest(entry, type); res.json({ ok: true, status: result.status, text: extractTestText(result.body, type), raw: result.body }); } catch (e) { res.status(502).json({ ok: false, error: e.message }); } });
 app.post("/api/test-all", async (req, res) => { try { const results = await runAllBenchmarks(); res.json({ ok: true, prompt: BENCHMARK_PROMPT, results }); } catch (e) { res.status(500).json({ ok: false, error: e.message }); } });
 app.get("/health", (req, res) => res.json({ ok: true }));

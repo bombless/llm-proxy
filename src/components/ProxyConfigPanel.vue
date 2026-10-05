@@ -11,7 +11,7 @@ const props = defineProps({
 const emit = defineEmits(['add', 'remove', 'test'])
 
 function snapshot(x) {
-  return { id: x.id, public_model: x.public_model, url: x.url, key: x.key, upstream_model: x.upstream_model, use_proxy: x.use_proxy, proxy_from_chat_completions: x.proxy_from_chat_completions, cache_price: x.cache_price, prefill_price: x.prefill_price, generation_price: x.generation_price, enabled: x.enabled }
+  return { id: x.id, public_model: x.public_model, url: x.url, key: x.key, upstream_model: x.upstream_model, use_proxy: x.use_proxy, proxy_from_chat_completions: x.proxy_from_chat_completions, cache_price: x.cache_price, prefill_price: x.prefill_price, generation_price: x.generation_price, enabled: x.enabled, hidden: x.hidden }
 }
 function isSaved(type, x) {
   const old = props.savedState[type].find(y => y.id === x.id)
@@ -25,7 +25,7 @@ function clearZeroOnFocus(row, field) {
 <template>
   <div>
     <section v-for="section in types" :key="section.key" class="card">
-      <div class="section-head"><div><h2>{{ section.title }}</h2><div class="hint">公开模型名 → 上游地址 / Key / 上游模型名 / 代理 / 价格（USD / 1M tokens）</div></div><button class="btn secondary" @click="emit('add', section.key)">＋ 添加</button></div>
+      <div class="section-head"><div><h2>{{ section.title }}</h2><div class="hint">公开模型名 → 上游地址 / Key / 上游模型名 / 代理 / 价格（USD / 1M tokens）；隐藏后不参与公开路由和 /v1/models</div></div><button class="btn secondary" @click="emit('add', section.key)">＋ 添加</button></div>
       <div v-if="!state[section.key].length" class="empty">还没有配置。</div>
       <div v-for="(row, index) in state[section.key]" :key="row.id" :class="section.key">
         <div class="config-row info">
@@ -41,6 +41,7 @@ function clearZeroOnFocus(row, field) {
           <label class="price-input-wrap"><input v-model.number="row.prefill_price" @focus="clearZeroOnFocus(row, 'prefill_price')" type="number" min="0" step="0.000001" placeholder="$/1M" aria-label="预填充价格（USD / 1M tokens）" /><span class="price-badge">预填充</span></label>
           <label class="price-input-wrap"><input v-model.number="row.generation_price" @focus="clearZeroOnFocus(row, 'generation_price')" type="number" min="0" step="0.000001" placeholder="输出价格（USD / 1M tokens）" /><span class="price-badge">输出</span></label>
           <label v-if="section.key === 'responses'" class="check"><input v-model="row.proxy_from_chat_completions" type="checkbox" /> 从 Chat Completions 代理</label>
+          <label class="check"><input v-model="row.hidden" type="checkbox" /> 隐藏</label>
           <button v-if="isSaved(section.key, row)" class="btn secondary" @click="emit('test', section.key, row)">{{ rowResults[`${section.key}:${row.id}`]?.loading ? '测试中…' : '测试“你好”' }}</button>
 
         </div>
@@ -56,8 +57,8 @@ function clearZeroOnFocus(row, field) {
 .config-row input:not([type="checkbox"]) { min-width: 0; padding: 10px 11px; border: 1px solid #d8dadd; border-radius: 8px; outline: none; }
 .config-row input:not([type="checkbox"]):focus { border-color: #999; box-shadow: 0 0 0 3px #0000000a; }
 .config-row.info { grid-template-columns: 1fr 1.3fr .9fr 1fr .85fr 1fr; }
-.config-row.price { grid-template-columns: 2fr 2fr 2fr 1fr; }
-.responses .config-row.price { grid-template-columns: 2fr 2fr 2fr 1fr 1fr; }
+.config-row.price { grid-template-columns: 2fr 2fr 2fr auto auto; }
+.responses .config-row.price { grid-template-columns: 2fr 2fr 2fr auto auto auto; }
 .check { display: flex; align-items: center; gap: 5px; color: #444; font-size: 13px; white-space: nowrap; }
 .check input { width: 17px; height: 17px; }
 .price-input-wrap { position: relative; display: block; min-width: 0; }

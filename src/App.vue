@@ -29,7 +29,7 @@ const notice = ref('')
 
 function clone(value) { return JSON.parse(JSON.stringify(value)) }
 function snapshot(x) {
-  return { id: x.id, public_model: x.public_model, url: x.url, key: x.key, upstream_model: x.upstream_model, use_proxy: x.use_proxy, proxy_from_chat_completions: x.proxy_from_chat_completions, cache_price: x.cache_price, prefill_price: x.prefill_price, generation_price: x.generation_price, enabled: x.enabled }
+  return { id: x.id, public_model: x.public_model, url: x.url, key: x.key, upstream_model: x.upstream_model, use_proxy: x.use_proxy, proxy_from_chat_completions: x.proxy_from_chat_completions, cache_price: x.cache_price, prefill_price: x.prefill_price, generation_price: x.generation_price, enabled: x.enabled, hidden: x.hidden }
 }
 function isSaved(type, x) {
   const old = savedState[type].find(y => y.id === x.id)
@@ -37,7 +37,7 @@ function isSaved(type, x) {
 }
 const hasUnsavedChanges = computed(() => types.some(({ key }) => JSON.stringify(state[key].map(snapshot)) !== JSON.stringify(savedState[key].map(snapshot))))
 function makeRow() {
-  return { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, public_model: '', url: '', key: '', upstream_model: '', use_proxy: true, proxy_from_chat_completions: false, cache_price: 0, prefill_price: 0, generation_price: 0, enabled: true }
+  return { id: `${Date.now()}-${Math.random().toString(36).slice(2)}`, public_model: '', url: '', key: '', upstream_model: '', use_proxy: true, proxy_from_chat_completions: false, cache_price: 0, prefill_price: 0, generation_price: 0, enabled: true, hidden: false }
 }
 function addRow(type) { state[type].push(makeRow()) }
 function removeRow(type, index) { state[type].splice(index, 1) }
@@ -53,8 +53,9 @@ async function load() {
     if (!response.ok) throw new Error(`HTTP ${response.status}`)
     const data = await response.json()
     for (const type of types.map(x => x.key)) {
-      state[type].splice(0, state[type].length, ...(data[type] || []))
-      savedState[type].splice(0, savedState[type].length, ...clone(data[type] || []))
+      const rows = (data[type] || []).map(x => ({ ...x, hidden: x.hidden === true }))
+      state[type].splice(0, state[type].length, ...rows)
+      savedState[type].splice(0, savedState[type].length, ...clone(rows))
     }
   } catch (error) { showNotice(`加载配置失败：${error.message}`) }
 }
@@ -65,8 +66,9 @@ async function save() {
     const data = await response.json()
     if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`)
     for (const type of types.map(x => x.key)) {
-      state[type].splice(0, state[type].length, ...(data[type] || []))
-      savedState[type].splice(0, savedState[type].length, ...clone(data[type] || []))
+      const rows = (data[type] || []).map(x => ({ ...x, hidden: x.hidden === true }))
+      state[type].splice(0, state[type].length, ...rows)
+      savedState[type].splice(0, savedState[type].length, ...clone(rows))
     }
     showNotice('已保存')
   } catch (error) { showNotice(`保存失败：${error.message}`) } finally { busy.value = false }
