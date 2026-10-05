@@ -45,27 +45,26 @@ function compactTurn(turn) {
   return { ...turn, request: compactSessionValue(turn.request), chat_request: compactSessionValue(turn.chat_request), response: compactSessionValue(turn.response) };
 }
 
-function emptyResponseStore() { return { version: 2, sessions: {}, responses: {} }; }
-let responseStore = emptyResponseStore();
-try {
-  const raw = JSON.parse(fs.readFileSync(RESPONSE_STATE_FILE, "utf8"));
-  if (raw?.version === 2 && raw.sessions && raw.responses) responseStore = raw;
-} catch {}
-
-function saveResponseState() { saveJson(RESPONSE_STATE_FILE, responseStore); }
-function responseRecord(id) { return id ? responseStore.responses[id] || null : null; }
-function findSessionByResponseId(id) {
-  const record = responseRecord(id);
-  return record?.session_id ? responseStore.sessions[record.session_id] || null : null;
-}
+// Response/session history is stored in Alasql. The JSON file is only a portable snapshot so history survives process restarts without another DB server.
+const responseDb = new alasql.Database("llm_proxy_responses");
+responseDb.exec("CREATE TABLE IF NOT EXISTS response_sessions (id STRING, data STRING)");
+responseDb.exec("CREATE TABLE IF NOT EXISTS response_records (id STRING, data STRING)");
+function dbJson(value) { return JSON.stringify(value === undefined ? null : value); }
+function parseDbJson(value) { try { return JSON.parse(value); } catch { return null; } }
+function dbSessions() { return responseDb.exec("SELECT data FROM response_sessions").map((row) => parseDbJson(row.data)).filter(Boolean); }
+function dbResponses() { return responseDb.exec("SELECT data FROM response_records").map((row) => parseDbJson(row.data)).filter(Boolean); }
+function dbSession(id) { const rows = responseDb.exec("SELECT data FROM response_sessions WHERE id = ?", [id]); return rows[0] ? parseDbJson(rows[0].data) : null; }
+function responseRecord(id) { const rows = id ? responseDb.exec("SELECT data FROM response_records WHERE id = ?", [id]) : []; return rows[0] ? parseDbJson(rows[0].data) : null; }
+function putDbSession(session) { responseDb.exec("DELETE FROM response_sessions WHERE id = ?", [session.id]); responseDb.exec("INSERT INTO response_sessions VALUES (?, ?)", [session.id, dbJson(session)]); }
+function putDbResponse(record) { responseDb.exec("DELETE FROM response_records WHERE id = ?", [record.id]); responseDb.exec("INSERT INTO response_records VALUES (?, ?)", [record.id, dbJson(record)]); }
+function findSessionByResponseId(id) { const record = responseRecord(id); return record?.session_id ? dbSession(record.session_id) : null; }
 function responseHistory(state, id) {
-  const store = state || responseStore;
   const chain = [], seen = new Set();
   let currentId = id;
   while (currentId) {
     if (seen.has(currentId)) throw new Error("Circular previous_response_id: " + currentId);
     seen.add(currentId);
-    const current = store.responses[currentId];
+    const current = responseRecord(currentId);
     if (!current) throw new Error("Unknown previous_response_id: " + currentId);
     chain.push(current);
     currentId = current.previous_response_id || null;
@@ -79,79 +78,61 @@ function responseHistory(state, id) {
   }
   return { messages, tools, chain };
 }
+function saveResponseState() {
+  const snapshot = { version: 3, sessions: {}, responses: {} };
+  for (const session of dbSessions()) snapshot.sessions[session.id] = session;
+  for (const record of dbResponses()) snapshot.responses[record.id] = record;
+  saveJson(RESPONSE_STATE_FILE, snapshot);
+}
 function trimResponseSessions() {
-  const sessions = Object.values(responseStore.sessions).sort((a,b) => new Date(a.updated_at || a.created_at || 0) - new Date(b.updated_at || b.created_at || 0));
+  const sessions = dbSessions().sort((a,b) => new Date(a.updated_at || a.created_at || 0) - new Date(b.updated_at || b.created_at || 0));
   while (sessions.length > RESPONSE_SESSION_LIMIT) {
     const removed = sessions.shift();
     if (!removed) break;
-    delete responseStore.sessions[removed.id];
-    for (const turn of removed.turns || []) if (turn.response_id) delete responseStore.responses[turn.response_id];
+    responseDb.exec("DELETE FROM response_sessions WHERE id = ?", [removed.id]);
+    for (const turn of removed.turns || []) if (turn.response_id) responseDb.exec("DELETE FROM response_records WHERE id = ?", [turn.response_id]);
   }
 }
-function migrateLegacyResponseStore() {
-  if (Object.keys(responseStore.sessions).length || Object.keys(responseStore.responses).length) return false;
-  let legacyState = {};
+function loadResponseDatabase() {
+  let raw = null;
+  try { raw = JSON.parse(fs.readFileSync(RESPONSE_STATE_FILE, "utf8")); } catch {}
+  if (raw?.version === 3 && raw.sessions && raw.responses) {
+    for (const session of Object.values(raw.sessions)) putDbSession(session);
+    for (const record of Object.values(raw.responses)) putDbResponse(record);
+    return true;
+  }
+  if (raw?.version === 2 && raw.sessions && raw.responses) {
+    for (const session of Object.values(raw.sessions)) putDbSession(session);
+    for (const record of Object.values(raw.responses)) putDbResponse(record);
+    saveResponseState();
+    return true;
+  }
   let legacySessions = [];
-  try { legacyState = JSON.parse(fs.readFileSync(RESPONSE_STATE_FILE, "utf8")); } catch {}
   try { legacySessions = JSON.parse(fs.readFileSync(RESPONSE_SESSIONS_FILE, "utf8")); } catch {}
-  if (!legacyState || legacyState.version === 2 || !legacySessions?.length) return false;
-
+  if (!Array.isArray(legacySessions) || !legacySessions.length) return false;
   const sessionMap = new Map();
   for (const old of legacySessions) {
     const conversationId = old.conversation_id || ("conversation_" + randomId());
     let session = sessionMap.get(conversationId);
     if (!session) {
-      session = {
-        id: old.id || ("session_" + randomId()),
-        conversation_id: conversationId,
-        created_at: old.at || new Date().toISOString(),
-        updated_at: old.updated_at || old.at || new Date().toISOString(),
-        model: old.model,
-        upstream_model: old.upstream_model,
-        upstream_url: old.upstream_url,
-        turns: []
-      };
+      session = { id: old.id || ("session_" + randomId()), conversation_id: conversationId, created_at: old.at || new Date().toISOString(), updated_at: old.updated_at || old.at || new Date().toISOString(), model: old.model, upstream_model: old.upstream_model, upstream_url: old.upstream_url, turns: [] };
       sessionMap.set(conversationId, session);
-      responseStore.sessions[session.id] = session;
     }
-    const turn = {
-      id: "turn_" + randomId(),
-      turn: Number(old.turn) || session.turns.length + 1,
-      at: old.at || new Date().toISOString(),
-      updated_at: old.updated_at,
-      status: old.status || "completed",
-      request: old.request,
-      chat_request: old.chat_request,
-      response_id: old.response_id || null,
-      response: old.response || null,
-      error: old.error,
-      upstream_status: old.upstream_status
-    };
-    session.turns.push(turn);
-    session.updated_at = turn.updated_at || turn.at;
+    session.turns.push({ id: "turn_" + randomId(), turn: Number(old.turn) || session.turns.length + 1, at: old.at || new Date().toISOString(), updated_at: old.updated_at, status: old.status || "completed", request: old.request, chat_request: old.chat_request, response_id: old.response_id || null, response: old.response || null, error: old.error, upstream_status: old.upstream_status });
+    session.updated_at = session.turns[session.turns.length - 1].updated_at || session.turns[session.turns.length - 1].at;
   }
-
+  for (const session of sessionMap.values()) putDbSession(session);
   for (const old of legacySessions) {
-    if (!old.response_id || !legacyState[old.response_id]) continue;
+    if (!old.response_id || !raw?.[old.response_id]) continue;
     const session = sessionMap.get(old.conversation_id);
     const turn = session?.turns?.find((item) => item.response_id === old.response_id);
-    const source = legacyState[old.response_id];
-    responseStore.responses[old.response_id] = {
-      ...source,
-      id: old.response_id,
-      session_id: session?.id || null,
-      turn: turn?.id || null,
-      previous_response_id: source.previous_response_id || null
-    };
+    putDbResponse({ ...raw[old.response_id], id: old.response_id, session_id: session?.id || null, turn: turn?.id || null, previous_response_id: raw[old.response_id].previous_response_id || null });
   }
-
   trimResponseSessions();
   saveResponseState();
   return true;
 }
-
-migrateLegacyResponseStore();
-
+loadResponseDatabase();
 let metrics = {};
 try { metrics = JSON.parse(fs.readFileSync(METRICS_FILE, "utf8")); } catch {}
 let metricCounts = {};
@@ -161,7 +142,7 @@ function saveMetricCounts() { saveJson(METRICS_COUNT_FILE, metricCounts); }
 let responseSessionsRevision = 1;
 function createResponseSession(body, chatBody, entry) {
   const previous = responseRecord(body.previous_response_id);
-  const previousSession = previous ? responseStore.sessions[previous.session_id] : null;
+  const previousSession = previous ? dbSession(previous.session_id) : null;
   const now = new Date().toISOString();
   const session = previousSession || {
     id: "session_" + randomId(),
@@ -173,7 +154,7 @@ function createResponseSession(body, chatBody, entry) {
     upstream_url: makeTargetUrl(entry, "responses", true).href,
     turns: []
   };
-  if (!previousSession) responseStore.sessions[session.id] = session;
+  if (!previousSession) putDbSession(session);
   const turn = {
     id: "turn_" + randomId(),
     turn: session.turns.length + 1,
@@ -186,6 +167,7 @@ function createResponseSession(body, chatBody, entry) {
   };
   session.turns.push(turn);
   session.updated_at = now;
+  putDbSession(session);
   trimResponseSessions();
   responseSessionsRevision += 1;
   return { session, turn };
@@ -193,15 +175,17 @@ function createResponseSession(body, chatBody, entry) {
 function updateResponseSession(session, turn, patch) {
   Object.assign(turn, patch);
   session.updated_at = new Date().toISOString();
+  putDbSession(session);
   trimResponseSessions();
   responseSessionsRevision += 1;
   saveResponseState();
 }
 function saveResponseRecord(id, record) {
-  responseStore.responses[id] = { ...record, id, session_id: record.session_id, turn: record.turn, previous_response_id: record.previous_response_id || null };
-  const session = responseStore.sessions[record.session_id];
+  const normalized = { ...record, id, session_id: record.session_id, turn: record.turn, previous_response_id: record.previous_response_id || null };
+  putDbResponse(normalized);
+  const session = dbSession(record.session_id);
   const turn = session?.turns?.find((item) => item.id === record.turn);
-  if (turn) turn.response_id = id;
+  if (turn) { turn.response_id = id; putDbSession(session); }
   responseSessionsRevision += 1;
   saveResponseState();
 }
@@ -522,7 +506,6 @@ function proxyRequest(req, res, type) {
   if (fromChat) return proxyResponsesThroughChat(req, res, entry, original, metricTracker(type, entry));
   let target;
   try { target = makeTargetUrl(entry, type); } catch (e) { return res.status(500).json({ error: { message: e.message, type: "proxy_config_error" } }); }
-  console.log('target', target)
   let body = getBodyBuffer(req);
   if (Object.keys(original).length) body = Buffer.from(JSON.stringify({ ...original, model: entry.upstream_model || publicModel }));
   sendUpstream(req, res, target, entry, body, null, metricTracker(type, entry));
@@ -530,7 +513,6 @@ function proxyRequest(req, res, type) {
 
 function shellQuote(value) { return `'${String(value).replace(/'/g, `'\\''`)}'`; }
 function logCurl(req, target, headers, body) {
-  console.log('target', target)
   if (!String(req.originalUrl || "").startsWith("/api/test")) return;
   const parts = [`curl -i -X ${shellQuote(req.method || "POST")}`, shellQuote(target.href)];
   for (const [key, value] of Object.entries(headers)) {
@@ -542,7 +524,6 @@ function logCurl(req, target, headers, body) {
   console.log(`[api/test curl] ${parts.join(" ")}`);
 }
 function sendUpstream(req, res, target, entry, body, onResponse, tracker = null, attempt = 0) {
-  console.log('sendUpstream', target)
   const headers = {};
   // Forward only HTTP semantics needed by the upstream API. Passing Codex's
   // compression/client fingerprint headers through has caused some compatible
@@ -600,7 +581,7 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
   let requestMessages;
   let requestTools;
   let responseTools;
-  try { ({ chat: chatBody, requestMessages, tools: requestTools, responseTools } = responseRequestToChat(body, responseStore)); } catch (e) { return res.status(400).json({ error: { message: e.message, type: "invalid_request_error" } }); }
+  try { ({ chat: chatBody, requestMessages, tools: requestTools, responseTools } = responseRequestToChat(body, null)); } catch (e) { return res.status(400).json({ error: { message: e.message, type: "invalid_request_error" } }); }
   chatBody.model = entry.upstream_model || body.model;
   const { session, turn } = createResponseSession(body, chatBody, entry);
   if (body.stream && (!chatBody.stream_options || chatBody.stream_options.include_usage === undefined)) chatBody.stream_options = { ...(chatBody.stream_options || {}), include_usage: true };
@@ -619,14 +600,14 @@ function proxyResponsesThroughChat(req, res, entry, body, tracker = null) {
         let usage = null; let parsed = null; try { parsed = JSON.parse(raw); usage = parsed?.usage || null; tracker?.consumeJson?.(parsed); } catch {}
         if (tracker) tracker.finish(upstream.statusCode || 502); else recordUsage("responses", entry, Date.now(), upstream.statusCode || 502, usage);
         if ((upstream.statusCode || 500) >= 400) { let message = raw; try { message = JSON.parse(raw)?.error?.message || message; } catch {} return res.status(upstream.statusCode || 502).json({ error: { message, type: "upstream_error" } }); }
-        try { const data = JSON.parse(raw); const response = chatToResponse(data, body.model, responseStore, body.previous_response_id, requestMessages, requestTools, responseTools, session, turn); updateResponseSession(session, turn, { status: "completed", response_id: response.id, response }); res.status(200).json(response); } catch (e) { updateResponseSession(session, turn, { status: "error", error: e.message }); res.status(502).json({ error: { message: e.message, type: "proxy_error" } }); }
+        try { const data = JSON.parse(raw); const response = chatToResponse(data, body.model, null, body.previous_response_id, requestMessages, requestTools, responseTools, session, turn); updateResponseSession(session, turn, { status: "completed", response_id: response.id, response }); res.status(200).json(response); } catch (e) { updateResponseSession(session, turn, { status: "error", error: e.message }); res.status(502).json({ error: { message: e.message, type: "proxy_error" } }); }
       });
       return;
     }
     if ((upstream.statusCode || 500) >= 400) { updateResponseSession(session, turn, { status: "error", upstream_status: upstream.statusCode }); res.status(upstream.statusCode || 502); upstream.pipe(res); return; }
     const responseId = `resp_${randomId()}`;
     const created = Math.floor(Date.now() / 1000);
-    const previousMessages = body.previous_response_id ? responseHistory(responseStore, body.previous_response_id).messages : [];
+    const previousMessages = body.previous_response_id ? responseHistory(null, body.previous_response_id).messages : [];
     const itemId = `msg_${randomId()}`;
     let fullText = "";
     let outputStarted = false;
@@ -746,7 +727,7 @@ function performTest(entry, type) {
   let target;
   try {
     if (fromChat) {
-      body = responseRequestToChat(originalBody, responseStore).chat;
+      body = responseRequestToChat(originalBody, null).chat;
       body.model = entry.upstream_model || originalBody.model;
       target = makeTargetUrl(entry, "responses", true);
     } else target = makeTargetUrl(entry, type);
@@ -803,7 +784,7 @@ app.get("/api/response-sessions", (req, res) => {
   res.setHeader("ETag", etag);
   res.setHeader("Cache-Control", "private, no-cache");
   if (req.headers["if-none-match"] === etag) return res.status(304).end();
-  const sessions = Object.values(responseStore.sessions)
+  const sessions = dbSessions()
     .sort((a, b) => new Date(b.updated_at || b.created_at || 0) - new Date(a.updated_at || a.created_at || 0))
     .slice(0, RESPONSE_SESSION_LIMIT)
     .map((session) => ({ ...session, turns: (session.turns || []).map(compactTurn) }));
