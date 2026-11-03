@@ -759,6 +759,40 @@ app.get("/v1/models", (req, res) => {
   for (const type of ["chat_completions", "responses"]) for (const entry of (config[type] || [])) if (isPublicEntry(entry) && !models.has(entry.public_model)) models.set(entry.public_model, { id: entry.public_model, object: "model", created: Number(entry.created) || 0, owned_by: entry.owned_by || "llm-proxy" });
   res.json({ object: "list", data: [...models.values()] });
 });
+app.post("/api/discover-models", async (req, res) => {
+  try {
+    const rawUrl = String(req.body?.url || "").trim();
+    const key = String(req.body?.key || "");
+    if (!rawUrl) return res.status(400).json({ error: "V1 地址不能为空" });
+    const target = new URL(rawUrl);
+    if (!["http:", "https:"].includes(target.protocol)) return res.status(400).json({ error: "仅支持 HTTP 或 HTTPS 地址" });
+    if (target.username || target.password) return res.status(400).json({ error: "请将认证信息填入 API Key，而不是写在 URL 中" });
+    let pathname = target.pathname.replace(/\/+$/, "");
+    if (/\/(chat\/completions|responses|models)$/i.test(pathname)) pathname = pathname.replace(/\/(chat\/completions|responses|models)$/i, "");
+    if (!pathname || pathname === "/") pathname = "/v1";
+    target.pathname = `${pathname}/models`.replace(/\/\/+/g, "/");
+    target.hash = "";
+    const useProxy = req.body?.use_proxy === true;
+    if (useProxy && !SOCKS5_PROXY) return res.status(400).json({ error: "已勾选 SOCKS5，但服务端尚未配置 SOCKS5_PROXY" });
+    const entry = { key, use_proxy: useProxy };
+    const fakeReq = { method: "GET", headers: {}, originalUrl: "/api/discover-models" };
+    const fakeRes = { headersSent: false, status() { return this; }, json(body) { reject(new Error(body?.error?.message || "连接上游失败")); }, destroy(error) { reject(error || new Error("上游连接已关闭")); } };
+    const payload = await new Promise((resolve, reject) => {
+      sendUpstream(fakeReq, fakeRes, target, entry, Buffer.alloc(0), (upstream) => {
+        const chunks = []; let size = 0;
+        upstream.on("data", chunk => { size += chunk.length; if (size > 5 * 1024 * 1024) { upstream.destroy(new Error("模型列表响应超过 5MB")); return; } chunks.push(chunk); });
+        upstream.on("end", () => {
+          const text = Buffer.concat(chunks).toString("utf8");
+          if ((upstream.statusCode || 500) < 200 || (upstream.statusCode || 500) >= 300) return reject(new Error(`上游返回 HTTP ${upstream.statusCode}: ${text.slice(0, 500)}`));
+          try { resolve(JSON.parse(text)); } catch { reject(new Error("上游返回的不是有效 JSON")); }
+        });
+        upstream.on("error", reject);
+      });
+    });
+    const models = Array.isArray(payload?.data) ? payload.data : Array.isArray(payload?.models) ? payload.models : [];
+    res.json({ models: [...new Map(models.filter(x => typeof x?.id === "string" && x.id.trim()).map(x => [x.id, { id: x.id }])).values()] });
+  } catch (error) { res.status(502).json({ error: error.message || "获取模型列表失败" }); }
+});
 app.get("/api/config", (req, res) => res.json(sanitizeConfig()));
 app.get("/api/usage", (req, res) => res.json(publicUsage()));
 app.get("/api/response-sessions", (req, res) => {
