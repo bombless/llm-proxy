@@ -5,17 +5,17 @@ const dns = require("dns");
 const fs = require("fs");
 const path = require("path");
 const alasql = require("alasql");
+const Database = require("better-sqlite3");
 const { SocksProxyAgent } = require("socks-proxy-agent");
 
 const LISTEN_HOST = process.env.LISTEN_HOST || "127.0.0.1";
 const LISTEN_PORT = Number(process.env.LISTEN_PORT || 8080);
 const SOCKS5_PROXY = process.env.SOCKS5_PROXY || "";
 const CONFIG_FILE = process.env.CONFIG_FILE || path.join(__dirname, "config.json");
-const RESPONSE_STATE_FILE = process.env.RESPONSE_STATE_FILE || path.join(__dirname, "responses-state.json");
+const RESPONSE_DB_FILE = process.env.RESPONSE_DB_FILE || path.join(__dirname, "responses.sqlite");
 const METRICS_FILE = process.env.METRICS_FILE || path.join(__dirname, "llm-metrics.json");
 const METRICS_COUNT_FILE = process.env.METRICS_COUNT_FILE || path.join(__dirname, "llm-metrics-counts.json");
 const USAGE_FILE = process.env.USAGE_FILE || path.join(__dirname, "llm-usage.json");
-const RESPONSE_SESSIONS_FILE = process.env.RESPONSE_SESSIONS_FILE || path.join(__dirname, "responses-sessions.json");
 
 const app = express();
 app.use(express.json({ limit: "50mb" }));
@@ -45,18 +45,37 @@ function compactTurn(turn) {
   return { ...turn, request: compactSessionValue(turn.request), chat_request: compactSessionValue(turn.chat_request), response: compactSessionValue(turn.response) };
 }
 
-// Response/session history is stored in Alasql. The JSON file is only a portable snapshot so history survives process restarts without another DB server.
-const responseDb = new alasql.Database("llm_proxy_responses");
-responseDb.exec("CREATE TABLE IF NOT EXISTS response_sessions (id STRING, data STRING)");
-responseDb.exec("CREATE TABLE IF NOT EXISTS response_records (id STRING, data STRING)");
-function dbJson(value) { return JSON.stringify(value === undefined ? null : value); }
-function parseDbJson(value) { try { return JSON.parse(value); } catch { return null; } }
-function dbSessions() { return responseDb.exec("SELECT data FROM response_sessions").map((row) => parseDbJson(row.data)).filter(Boolean); }
-function dbResponses() { return responseDb.exec("SELECT data FROM response_records").map((row) => parseDbJson(row.data)).filter(Boolean); }
-function dbSession(id) { const rows = responseDb.exec("SELECT data FROM response_sessions WHERE id = ?", [id]); return rows[0] ? parseDbJson(rows[0].data) : null; }
-function responseRecord(id) { const rows = id ? responseDb.exec("SELECT data FROM response_records WHERE id = ?", [id]) : []; return rows[0] ? parseDbJson(rows[0].data) : null; }
-function putDbSession(session) { responseDb.exec("DELETE FROM response_sessions WHERE id = ?", [session.id]); responseDb.exec("INSERT INTO response_sessions VALUES (?, ?)", [session.id, dbJson(session)]); }
-function putDbResponse(record) { responseDb.exec("DELETE FROM response_records WHERE id = ?", [record.id]); responseDb.exec("INSERT INTO response_records VALUES (?, ?)", [record.id, dbJson(record)]); }
+// Response/session history is persisted directly in SQLite. Legacy JSON history is intentionally ignored.
+fs.mkdirSync(path.dirname(RESPONSE_DB_FILE), { recursive: true });
+const responseDb = new Database(RESPONSE_DB_FILE);
+responseDb.pragma("journal_mode = WAL");
+responseDb.pragma("synchronous = NORMAL");
+responseDb.pragma("busy_timeout = 5000");
+responseDb.pragma("cache_size = -8192");
+responseDb.exec(`
+  CREATE TABLE IF NOT EXISTS response_sessions (
+    id TEXT PRIMARY KEY,
+    data TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS response_records (
+    id TEXT PRIMARY KEY,
+    data TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_response_records_session_id
+    ON response_records(json_extract(data, '$.session_id'));
+`);
+const selectSessions = responseDb.prepare("SELECT data FROM response_sessions");
+const selectSession = responseDb.prepare("SELECT data FROM response_sessions WHERE id = ?");
+const selectResponse = responseDb.prepare("SELECT data FROM response_records WHERE id = ?");
+const upsertSession = responseDb.prepare("INSERT INTO response_sessions (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data");
+const upsertResponse = responseDb.prepare("INSERT INTO response_records (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data");
+const deleteSession = responseDb.prepare("DELETE FROM response_sessions WHERE id = ?");
+const deleteResponsesForSession = responseDb.prepare("DELETE FROM response_records WHERE json_extract(data, '$.session_id') = ?");
+function dbSessions() { return selectSessions.all().map((row) => JSON.parse(row.data)); }
+function dbSession(id) { const row = selectSession.get(id); return row ? JSON.parse(row.data) : null; }
+function responseRecord(id) { const row = id ? selectResponse.get(id) : null; return row ? JSON.parse(row.data) : null; }
+function putDbSession(session) { upsertSession.run(session.id, JSON.stringify(session)); }
+function putDbResponse(record) { upsertResponse.run(record.id, JSON.stringify(record)); }
 function findSessionByResponseId(id) { const record = responseRecord(id); return record?.session_id ? dbSession(record.session_id) : null; }
 function responseHistory(state, id) {
   const chain = [], seen = new Set();
@@ -78,61 +97,19 @@ function responseHistory(state, id) {
   }
   return { messages, tools, chain };
 }
-function saveResponseState() {
-  const snapshot = { version: 3, sessions: {}, responses: {} };
-  for (const session of dbSessions()) snapshot.sessions[session.id] = session;
-  for (const record of dbResponses()) snapshot.responses[record.id] = record;
-  saveJson(RESPONSE_STATE_FILE, snapshot);
-}
 function trimResponseSessions() {
   const sessions = dbSessions().sort((a,b) => new Date(a.updated_at || a.created_at || 0) - new Date(b.updated_at || b.created_at || 0));
-  while (sessions.length > RESPONSE_SESSION_LIMIT) {
-    const removed = sessions.shift();
-    if (!removed) break;
-    responseDb.exec("DELETE FROM response_sessions WHERE id = ?", [removed.id]);
-    for (const turn of removed.turns || []) if (turn.response_id) responseDb.exec("DELETE FROM response_records WHERE id = ?", [turn.response_id]);
-  }
-}
-function loadResponseDatabase() {
-  let raw = null;
-  try { raw = JSON.parse(fs.readFileSync(RESPONSE_STATE_FILE, "utf8")); } catch {}
-  if (raw?.version === 3 && raw.sessions && raw.responses) {
-    for (const session of Object.values(raw.sessions)) putDbSession(session);
-    for (const record of Object.values(raw.responses)) putDbResponse(record);
-    return true;
-  }
-  if (raw?.version === 2 && raw.sessions && raw.responses) {
-    for (const session of Object.values(raw.sessions)) putDbSession(session);
-    for (const record of Object.values(raw.responses)) putDbResponse(record);
-    saveResponseState();
-    return true;
-  }
-  let legacySessions = [];
-  try { legacySessions = JSON.parse(fs.readFileSync(RESPONSE_SESSIONS_FILE, "utf8")); } catch {}
-  if (!Array.isArray(legacySessions) || !legacySessions.length) return false;
-  const sessionMap = new Map();
-  for (const old of legacySessions) {
-    const conversationId = old.conversation_id || ("conversation_" + randomId());
-    let session = sessionMap.get(conversationId);
-    if (!session) {
-      session = { id: old.id || ("session_" + randomId()), conversation_id: conversationId, created_at: old.at || new Date().toISOString(), updated_at: old.updated_at || old.at || new Date().toISOString(), model: old.model, upstream_model: old.upstream_model, upstream_url: old.upstream_url, turns: [] };
-      sessionMap.set(conversationId, session);
+  const remove = responseDb.transaction((items) => {
+    while (items.length > RESPONSE_SESSION_LIMIT) {
+      const removed = items.shift();
+      if (!removed) break;
+      deleteSession.run(removed.id);
+      deleteResponsesForSession.run(removed.id);
     }
-    session.turns.push({ id: "turn_" + randomId(), turn: Number(old.turn) || session.turns.length + 1, at: old.at || new Date().toISOString(), updated_at: old.updated_at, status: old.status || "completed", request: old.request, chat_request: old.chat_request, response_id: old.response_id || null, response: old.response || null, error: old.error, upstream_status: old.upstream_status });
-    session.updated_at = session.turns[session.turns.length - 1].updated_at || session.turns[session.turns.length - 1].at;
-  }
-  for (const session of sessionMap.values()) putDbSession(session);
-  for (const old of legacySessions) {
-    if (!old.response_id || !raw?.[old.response_id]) continue;
-    const session = sessionMap.get(old.conversation_id);
-    const turn = session?.turns?.find((item) => item.response_id === old.response_id);
-    putDbResponse({ ...raw[old.response_id], id: old.response_id, session_id: session?.id || null, turn: turn?.id || null, previous_response_id: raw[old.response_id].previous_response_id || null });
-  }
-  trimResponseSessions();
-  saveResponseState();
-  return true;
+  });
+  remove(sessions);
 }
-loadResponseDatabase();
+
 let metrics = {};
 try { metrics = JSON.parse(fs.readFileSync(METRICS_FILE, "utf8")); } catch {}
 let metricCounts = {};
@@ -178,16 +155,17 @@ function updateResponseSession(session, turn, patch) {
   putDbSession(session);
   trimResponseSessions();
   responseSessionsRevision += 1;
-  saveResponseState();
 }
 function saveResponseRecord(id, record) {
   const normalized = { ...record, id, session_id: record.session_id, turn: record.turn, previous_response_id: record.previous_response_id || null };
-  putDbResponse(normalized);
-  const session = dbSession(record.session_id);
-  const turn = session?.turns?.find((item) => item.id === record.turn);
-  if (turn) { turn.response_id = id; putDbSession(session); }
+  const persist = responseDb.transaction(() => {
+    putDbResponse(normalized);
+    const session = dbSession(record.session_id);
+    const turn = session?.turns?.find((item) => item.id === record.turn);
+    if (turn) { turn.response_id = id; putDbSession(session); }
+  });
+  persist();
   responseSessionsRevision += 1;
-  saveResponseState();
 }
 function metricKey(type, entry) { return `${type}:${entry.id}`; }
 function recordMetric(type, entry, sample) {
@@ -815,3 +793,8 @@ server.on("error", (err) => {
 });
 
 
+
+function closeResponseDatabase() {
+  if (responseDb.open) responseDb.close();
+}
+process.once("exit", closeResponseDatabase);
